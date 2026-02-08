@@ -554,15 +554,65 @@ export interface Fold {
 
 export interface FaceSketchLine {
   id: string;
+  type: 'line';
   start: Point2D;
   end: Point2D;
-  dimension: number;
-  axis: 'x' | 'y';
 }
+
+export interface FaceSketchCircle {
+  id: string;
+  type: 'circle';
+  center: Point2D;
+  radius: number;
+}
+
+export interface FaceSketchRect {
+  id: string;
+  type: 'rect';
+  origin: Point2D;
+  width: number;
+  height: number;
+}
+
+export type FaceSketchEntity = FaceSketchLine | FaceSketchCircle | FaceSketchRect;
 
 export interface FaceSketch {
   faceId: string;
-  lines: FaceSketchLine[];
+  entities: FaceSketchEntity[];
+}
+
+/**
+ * Classify a sketch line as a potential fold line.
+ * Returns axis and offset if the line spans edge-to-edge (horizontally or vertically).
+ * Returns null if the line doesn't qualify.
+ */
+export function classifySketchLineAsFold(
+  line: FaceSketchLine,
+  faceWidth: number,
+  faceHeight: number,
+): { axis: 'x' | 'y'; offset: number } | null {
+  const TOL = 1;
+  const { start, end } = line;
+
+  // Horizontal (x-axis fold): y near-constant, x spans full width
+  if (Math.abs(start.y - end.y) < TOL) {
+    const minX = Math.min(start.x, end.x);
+    const maxX = Math.max(start.x, end.x);
+    if (minX < TOL && maxX > faceWidth - TOL) {
+      return { axis: 'x', offset: (start.y + end.y) / 2 };
+    }
+  }
+
+  // Vertical (y-axis fold): x near-constant, y spans full height
+  if (Math.abs(start.x - end.x) < TOL) {
+    const minY = Math.min(start.y, end.y);
+    const maxY = Math.max(start.y, end.y);
+    if (minY < TOL && maxY > faceHeight - TOL) {
+      return { axis: 'y', offset: (start.x + end.x) / 2 };
+    }
+  }
+
+  return null;
 }
 
 export interface StressRelief {
