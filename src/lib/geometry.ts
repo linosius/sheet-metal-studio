@@ -19,6 +19,7 @@ export interface Flange {
   height: number;       // mm
   angle: number;        // degrees (default 90)
   direction: 'up' | 'down'; // relative to face normal
+  bendRadius: number;   // inner bend radius in mm
 }
 
 export interface SheetMetalPart {
@@ -177,58 +178,86 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
 
 /**
  * Create a flange mesh for a given edge.
+ * The flange bends from the top edge of the base face, rotating around the edge
+ * by the bend angle, extending outward along the edge's normal direction.
  */
 export function createFlangeMesh(
   edge: PartEdge,
-  flangeHeight: number,
-  thickness: number,
-  angleDeg: number,
-  direction: 'up' | 'down'
+  flange: Flange,
+  thickness: number
 ): THREE.BufferGeometry {
-  // Edge vector
-  const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start);
-  const edgeLen = edgeDir.length();
+  const edgeVec = new THREE.Vector3().subVectors(edge.end, edge.start);
+  const edgeLen = edgeVec.length();
+  const edgeDirNorm = edgeVec.clone().normalize();
 
-  // Create a rectangular flange profile in local space
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.lineTo(edgeLen, 0);
-  shape.lineTo(edgeLen, flangeHeight);
-  shape.lineTo(0, flangeHeight);
-  shape.closePath();
+  const angleRad = (flange.angle * Math.PI) / 180;
+  const dirSign = flange.direction === 'up' ? 1 : -1;
 
-  const geometry = new THREE.ExtrudeGeometry(shape, {
-    depth: thickness,
-    bevelEnabled: false,
-  });
+  // The flange plane: starts at the edge, rotates by bend angle around the edge axis
+  // The "up" direction from the base face is Z+
+  // The "outward" direction is the edge normal (in XY plane)
+  
+  // Flange extends in a direction that is a rotation of Z+ around the edge axis
+  // by the complement of the bend angle
+  // For 90° bend: flange goes along the normal direction
+  // For 0° bend: flange goes straight up (Z+)
+  
+  // The flange "height" direction after bending:
+  const flangeDir = new THREE.Vector3();
+  flangeDir.copy(edge.normal).multiplyScalar(Math.sin(angleRad));
+  flangeDir.z += Math.cos(angleRad) * dirSign;
+  flangeDir.normalize();
 
-  // Orient the flange: rotate around the edge axis by bend angle
-  const angleRad = (angleDeg * Math.PI) / 180;
-  const dirSign = direction === 'up' ? 1 : -1;
+  // Build the flange as a flat quad, then extrude
+  // Four corners of the flange face (outer surface):
+  const p0 = edge.start.clone();
+  const p1 = edge.end.clone();
+  const p2 = edge.end.clone().add(flangeDir.clone().multiplyScalar(flange.height));
+  const p3 = edge.start.clone().add(flangeDir.clone().multiplyScalar(flange.height));
 
-  // Build transformation matrix
-  const matrix = new THREE.Matrix4();
+  // The thickness direction is perpendicular to both edgeDir and flangeDir
+  const thicknessDir = new THREE.Vector3().crossVectors(edgeDirNorm, flangeDir).normalize();
+  const thicknessOffset = thicknessDir.clone().multiplyScalar(thickness);
 
-  // 1. Align edge direction with X axis
-  const edgeDirNorm = edgeDir.clone().normalize();
-  const up = new THREE.Vector3(0, 0, dirSign);
-  const side = new THREE.Vector3().crossVectors(edgeDirNorm, up).normalize();
+  // Inner surface
+  const p4 = p0.clone().add(thicknessOffset);
+  const p5 = p1.clone().add(thicknessOffset);
+  const p6 = p2.clone().add(thicknessOffset);
+  const p7 = p3.clone().add(thicknessOffset);
 
-  // Rotation to align flange along edge normal at bend angle
-  const bendNormal = edge.normal.clone().multiplyScalar(Math.sin(angleRad));
-  bendNormal.z += Math.cos(angleRad) * dirSign;
-  bendNormal.normalize();
+  // Build geometry from 8 vertices, 6 faces (12 triangles)
+  const vertices = new Float32Array([
+    // Outer face (0,1,2,3)
+    p0.x, p0.y, p0.z,
+    p1.x, p1.y, p1.z,
+    p2.x, p2.y, p2.z,
+    p3.x, p3.y, p3.z,
+    // Inner face (4,5,6,7)
+    p4.x, p4.y, p4.z,
+    p5.x, p5.y, p5.z,
+    p6.x, p6.y, p6.z,
+    p7.x, p7.y, p7.z,
+  ]);
 
-  const rotMatrix = new THREE.Matrix4().makeBasis(
-    edgeDirNorm,
-    bendNormal,
-    new THREE.Vector3().crossVectors(edgeDirNorm, bendNormal).normalize()
-  );
+  const indices = [
+    // Outer face
+    0, 1, 2,  0, 2, 3,
+    // Inner face (reversed winding)
+    4, 6, 5,  4, 7, 6,
+    // Top edge (far from base)
+    3, 2, 6,  3, 6, 7,
+    // Bottom edge (at base)
+    0, 5, 1,  0, 4, 5,
+    // Left side
+    0, 3, 7,  0, 7, 4,
+    // Right side
+    1, 5, 6,  1, 6, 2,
+  ];
 
-  matrix.multiply(new THREE.Matrix4().makeTranslation(edge.start.x, edge.start.y, edge.start.z));
-  matrix.multiply(rotMatrix);
-
-  geometry.applyMatrix4(matrix);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
 
   return geometry;
 }
