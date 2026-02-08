@@ -18,21 +18,41 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
     () => createFlangeMesh(edge, flange, thickness),
     [edge, flange, thickness]
   );
-  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
+  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
+
+  // Bend crease line at the transition (the original edge, slightly offset into the flange)
+  const creasePoints = useMemo(() => {
+    const dirSign = flange.direction === 'up' ? 1 : -1;
+    const wDir = new THREE.Vector3(0, 0, dirSign);
+    const offset = 0.02; // just above the base face
+    const s = edge.start.clone().add(wDir.clone().multiplyScalar(offset));
+    const e = edge.end.clone().add(wDir.clone().multiplyScalar(offset));
+    return [
+      [s.x, s.y, s.z] as [number, number, number],
+      [e.x, e.y, e.z] as [number, number, number],
+    ];
+  }, [edge, flange.direction]);
 
   return (
     <group>
       <mesh geometry={geometry}>
         <meshStandardMaterial
-          color="#a8b8c8"
+          color="#c8cdd3"
           metalness={0.4}
           roughness={0.45}
           side={THREE.DoubleSide}
+          flatShading
         />
       </mesh>
       <lineSegments geometry={edgesGeo}>
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
+      {/* Bend crease line */}
+      <Line
+        points={creasePoints}
+        color="#8899aa"
+        lineWidth={1.5}
+      />
     </group>
   );
 }

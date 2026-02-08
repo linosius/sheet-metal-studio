@@ -201,6 +201,8 @@ export function createFlangeMesh(
   const wDir = new THREE.Vector3(0, 0, dirSign);          // perpendicular to base
 
   const BEND_SEGMENTS = 12;
+  // Small offset to prevent z-fighting between flange base cap and base face edge
+  const W_EPSILON = 0.01;
 
   // ---------- Build 2D cross-section profile (u, w) ----------
   // Each entry stores inner & outer positions in (u,w) space relative to the edge point.
@@ -214,7 +216,7 @@ export function createFlangeMesh(
     const cosT = Math.cos(t);
     // Inner surface traces radius R around center (0, R)
     const iu = R * sinT;
-    const iw = R * (1 - cosT);
+    const iw = R * (1 - cosT) + W_EPSILON;
     // Outer surface is offset by thickness radially outward from center
     const ou = iu + thickness * sinT;
     const ow = iw - thickness * cosT;
@@ -236,9 +238,9 @@ export function createFlangeMesh(
 
   profile.push({
     iu: arcEndIU + H * tanU,
-    iw: arcEndIW + H * tanW,
+    iw: arcEndIW + H * tanW + W_EPSILON,
     ou: arcEndIU + H * tanU + thickness * perpU,
-    ow: arcEndIW + H * tanW + thickness * perpW,
+    ow: arcEndIW + H * tanW + thickness * perpW + W_EPSILON,
   });
 
   // ---------- Convert to 3D vertices ----------
@@ -284,9 +286,13 @@ export function createFlangeMesh(
   // Base cap (at edge, first profile point)
   indices.push(0, 3, 1, 0, 2, 3);
 
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geometry.setIndex(indices);
+  const indexed = new THREE.BufferGeometry();
+  indexed.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  indexed.setIndex(indices);
+
+  // Convert to non-indexed so each face gets its own vertices,
+  // then recompute normals — gives clean flat shading per face
+  const geometry = indexed.toNonIndexed();
   geometry.computeVertexNormals();
   return geometry;
 }
