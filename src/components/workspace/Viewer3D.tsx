@@ -1,9 +1,11 @@
-import { useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, GizmoViewport, Grid, PerspectiveCamera, Line } from '@react-three/drei';
+import { useMemo, useRef } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
+import { OrbitControls, GizmoHelper, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
+import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import { createBaseFaceMesh, extractEdges, createFlangeMesh, computeBendLinePositions, getAllSelectableEdges, PartEdge, Flange } from '@/lib/geometry';
+import { ViewCube } from './ViewCube';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -149,6 +151,25 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
   );
 }
 
+function CameraApi({ apiRef, defaultPos, defaultTarget }: {
+  apiRef: React.MutableRefObject<{ reset: () => void }>;
+  defaultPos: [number, number, number];
+  defaultTarget: [number, number, number];
+}) {
+  const camera = useThree(s => s.camera);
+  const controls = useThree(s => s.controls);
+
+  apiRef.current.reset = () => {
+    camera.position.set(...defaultPos);
+    if (controls) {
+      (controls as any).target.set(...defaultTarget);
+      (controls as any).update();
+    }
+  };
+
+  return null;
+}
+
 function SceneSetup() {
   return (
     <>
@@ -168,6 +189,8 @@ interface Viewer3DProps {
 }
 
 export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick, flanges }: Viewer3DProps) {
+  const cameraApi = useRef({ reset: () => {} });
+
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
     const ys = profile.map(p => p.y);
@@ -181,17 +204,25 @@ export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick, flan
     return { cx, cy, size };
   }, [profile]);
 
+  const defaultPos: [number, number, number] = [
+    bounds.cx + bounds.size * 0.8,
+    bounds.cy - bounds.size * 0.8,
+    bounds.size * 1.2,
+  ];
+  const defaultTarget: [number, number, number] = [bounds.cx, bounds.cy, thickness / 2];
+
   return (
-    <div className="flex-1 bg-cad-surface">
+    <div className="flex-1 bg-cad-surface relative">
       <Canvas>
         <PerspectiveCamera
           makeDefault
-          position={[bounds.cx + bounds.size * 0.8, bounds.cy - bounds.size * 0.8, bounds.size * 1.2]}
+          position={defaultPos}
           fov={45}
           near={0.1}
           far={10000}
         />
         <SceneSetup />
+        <CameraApi apiRef={cameraApi} defaultPos={defaultPos} defaultTarget={defaultTarget} />
 
         <SheetMetalMesh
           profile={profile}
@@ -215,15 +246,25 @@ export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick, flan
         />
 
         <OrbitControls
-          target={[bounds.cx, bounds.cy, thickness / 2]}
+          makeDefault
+          target={defaultTarget}
           enableDamping
           dampingFactor={0.1}
         />
 
-        <GizmoHelper alignment="bottom-right" margin={[60, 60]}>
-          <GizmoViewport />
+        <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
+          <ViewCube />
         </GizmoHelper>
       </Canvas>
+
+      {/* Home button above ViewCube */}
+      <button
+        onClick={() => cameraApi.current.reset()}
+        className="absolute bottom-[136px] right-[64px] w-8 h-8 flex items-center justify-center rounded bg-card/80 border border-border/50 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors shadow-sm"
+        title="Reset to home view"
+      >
+        <Home className="h-4 w-4" />
+      </button>
     </div>
   );
 }
