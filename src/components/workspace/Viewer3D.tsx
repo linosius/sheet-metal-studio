@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { Point2D } from '@/lib/sheetmetal';
-import { createBaseFaceMesh, extractEdges, createFlangeMesh, PartEdge, Flange } from '@/lib/geometry';
+import { createBaseFaceMesh, extractEdges, createFlangeMesh, computeBendLinePositions, PartEdge, Flange } from '@/lib/geometry';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -20,18 +20,20 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
 
-  // Bend crease line at the transition (the original edge, slightly offset into the flange)
-  const creasePoints = useMemo(() => {
-    const dirSign = flange.direction === 'up' ? 1 : -1;
-    const wDir = new THREE.Vector3(0, 0, dirSign);
-    const offset = 0.02; // just above the base face
-    const s = edge.start.clone().add(wDir.clone().multiplyScalar(offset));
-    const e = edge.end.clone().add(wDir.clone().multiplyScalar(offset));
-    return [
-      [s.x, s.y, s.z] as [number, number, number],
-      [e.x, e.y, e.z] as [number, number, number],
-    ];
-  }, [edge, flange.direction]);
+  // Compute both bend lines on the outer surface
+  const bendLines = useMemo(() => {
+    const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
+    return {
+      start: [
+        [bendStart[0].x, bendStart[0].y, bendStart[0].z] as [number, number, number],
+        [bendStart[1].x, bendStart[1].y, bendStart[1].z] as [number, number, number],
+      ],
+      end: [
+        [bendEnd[0].x, bendEnd[0].y, bendEnd[0].z] as [number, number, number],
+        [bendEnd[1].x, bendEnd[1].y, bendEnd[1].z] as [number, number, number],
+      ],
+    };
+  }, [edge, flange, thickness]);
 
   return (
     <group>
@@ -47,12 +49,10 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
       <lineSegments geometry={edgesGeo}>
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
-      {/* Bend crease line */}
-      <Line
-        points={creasePoints}
-        color="#8899aa"
-        lineWidth={1.5}
-      />
+      {/* Bend start line (where flat base meets bend arc) */}
+      <Line points={bendLines.start} color="#475569" lineWidth={1.5} />
+      {/* Bend end line (where bend arc meets flat flange) */}
+      <Line points={bendLines.end} color="#475569" lineWidth={1.5} />
     </group>
   );
 }

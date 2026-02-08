@@ -187,6 +187,57 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
  * space, starting from the edge point. The flat flange extends from the arc
  * end in the tangent direction.
  */
+/**
+ * Compute the 3D positions for the two bend lines on the outer surface.
+ * Returns { bendStart: [Vector3, Vector3], bendEnd: [Vector3, Vector3] }
+ * where each pair is [edgeStartSide, edgeEndSide].
+ */
+export function computeBendLinePositions(
+  edge: PartEdge,
+  flange: Flange,
+  thickness: number
+): { bendStart: [THREE.Vector3, THREE.Vector3]; bendEnd: [THREE.Vector3, THREE.Vector3] } {
+  const bendAngleRad = (flange.angle * Math.PI) / 180;
+  const dirSign = flange.direction === 'up' ? 1 : -1;
+  const R = flange.bendRadius;
+
+  const uDir = edge.normal.clone().normalize();
+  const wDir = new THREE.Vector3(0, 0, dirSign);
+
+  const W_EPSILON = 0.01;
+
+  // Bend Start Line (outer surface at t=0):
+  // u = 0, w = R*(1-cos(0)) - thickness*cos(0) = -thickness
+  const startU = 0;
+  const startW = -thickness + W_EPSILON;
+
+  const bendStartA = edge.start.clone()
+    .add(uDir.clone().multiplyScalar(startU))
+    .add(wDir.clone().multiplyScalar(startW));
+  const bendStartB = edge.end.clone()
+    .add(uDir.clone().multiplyScalar(startU))
+    .add(wDir.clone().multiplyScalar(startW));
+
+  // Bend End Line (outer surface at t=bendAngle):
+  // u = R*sin(A) + thickness*sin(A), w = R*(1-cos(A)) - thickness*cos(A)
+  const sinA = Math.sin(bendAngleRad);
+  const cosA = Math.cos(bendAngleRad);
+  const endU = R * sinA + thickness * sinA;
+  const endW = R * (1 - cosA) - thickness * cosA + W_EPSILON;
+
+  const bendEndA = edge.start.clone()
+    .add(uDir.clone().multiplyScalar(endU))
+    .add(wDir.clone().multiplyScalar(endW));
+  const bendEndB = edge.end.clone()
+    .add(uDir.clone().multiplyScalar(endU))
+    .add(wDir.clone().multiplyScalar(endW));
+
+  return {
+    bendStart: [bendStartA, bendStartB],
+    bendEnd: [bendEndA, bendEndB],
+  };
+}
+
 export function createFlangeMesh(
   edge: PartEdge,
   flange: Flange,
