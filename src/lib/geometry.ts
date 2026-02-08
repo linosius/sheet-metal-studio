@@ -930,6 +930,46 @@ export function isEdgeOnFoldLine(edge: PartEdge, folds: Fold[], profile: Point2D
 }
 
 /**
+ * Given the moving polygon in local (t, d) coordinates, intersect a horizontal
+ * line at the given d value to find the t-range [tLeft, tRight].
+ * Returns null if no valid intersection (d beyond polygon extent).
+ */
+function getPolygonTRangeAtD(
+  localPoly: { t: number; d: number }[],
+  d: number,
+): [number, number] | null {
+  if (localPoly.length < 3) return null;
+
+  const TOL = 1e-6;
+  const intersections: number[] = [];
+
+  for (let i = 0; i < localPoly.length; i++) {
+    const j = (i + 1) % localPoly.length;
+    const a = localPoly[i];
+    const b = localPoly[j];
+
+    const dMin = Math.min(a.d, b.d);
+    const dMax = Math.max(a.d, b.d);
+
+    // Skip edges that don't span this d level
+    if (d < dMin - TOL || d > dMax + TOL) continue;
+
+    const dRange = b.d - a.d;
+    if (Math.abs(dRange) < TOL) {
+      // Horizontal edge at this d — include both t values
+      intersections.push(a.t, b.t);
+    } else {
+      const frac = Math.max(0, Math.min(1, (d - a.d) / dRange));
+      intersections.push(a.t + frac * (b.t - a.t));
+    }
+  }
+
+  if (intersections.length === 0) return null;
+
+  return [Math.min(...intersections), Math.max(...intersections)];
+}
+
+/**
  * Create a fold mesh from the actual moving polygon shape.
  * Clips the base face polygon by the fold line, excluding regions already claimed
  * by other folds, then builds proper arc + tip geometry that matches the true shape.
@@ -1035,7 +1075,7 @@ export function createFoldMesh(
   const tMin = Math.min(...foldTs);
   const tMax = Math.max(...foldTs);
 
-  // ═══════ ARC GEOMETRY — smooth shading with per-vertex normals ═══════
+  // ═══════ ARC GEOMETRY — polygon-bounded with smooth inner/outer ═══════
   const arcVerts: number[] = [];
   const arcNormals: number[] = [];
   const arcIdx: number[] = [];
@@ -1048,15 +1088,45 @@ export function createFoldMesh(
 
   const ARC_N = 24;
 
-  // Inner surface — normals point toward the center of curvature (concave side)
-  const innerVi: [number, number][] = [];
+  // Precompute variable t-ranges at each angular step from the polygon boundary
+  interface ArcStep {
+    ang: number;
+    tLI: number; tRI: number; // inner surface t-range
+    tLO: number; tRO: number; // outer surface t-range
+  }
+  const arcSteps: ArcStep[] = [];
   for (let i = 0; i <= ARC_N; i++) {
     const ang = A * (i / ARC_N);
+    const dI = R * Math.sin(ang);
+    const dO = (R + TH) * Math.sin(ang);
+
+    let rangeI: [number, number];
+    let rangeO: [number, number];
+
+    if (dI < 0.01) {
+      rangeI = [tMin, tMax];
+    } else {
+      rangeI = getPolygonTRangeAtD(locs, dI) ?? [tMin, tMax];
+    }
+
+    if (dO < 0.01) {
+      rangeO = [tMin, tMax];
+    } else {
+      rangeO = getPolygonTRangeAtD(locs, dO) ?? rangeI;
+    }
+
+    arcSteps.push({ ang, tLI: rangeI[0], tRI: rangeI[1], tLO: rangeO[0], tRO: rangeO[1] });
+  }
+
+  // Inner surface — smooth normals pointing toward center of curvature
+  const innerVi: [number, number][] = [];
+  for (let i = 0; i <= ARC_N; i++) {
+    const { ang, tLI, tRI } = arcSteps[i];
     const n = U3.clone().multiplyScalar(-Math.sin(ang))
       .add(W3.clone().multiplyScalar(Math.cos(ang)));
     innerVi.push([
-      addArcV(arcInner(tMin, ang), n),
-      addArcV(arcInner(tMax, ang), n),
+      addArcV(arcInner(tLI, ang), n),
+      addArcV(arcInner(tRI, ang), n),
     ]);
   }
   for (let i = 0; i < ARC_N; i++) {
@@ -1064,15 +1134,15 @@ export function createFoldMesh(
     arcIdx.push(c[0], c[1], n[1], c[0], n[1], n[0]);
   }
 
-  // Outer surface — normals point away from center (convex side)
+  // Outer surface — smooth normals pointing away from center
   const outerVi: [number, number][] = [];
   for (let i = 0; i <= ARC_N; i++) {
-    const ang = A * (i / ARC_N);
+    const { ang, tLO, tRO } = arcSteps[i];
     const n = U3.clone().multiplyScalar(Math.sin(ang))
       .add(W3.clone().multiplyScalar(-Math.cos(ang)));
     outerVi.push([
-      addArcV(arcOuter(tMin, ang), n),
-      addArcV(arcOuter(tMax, ang), n),
+      addArcV(arcOuter(tLO, ang), n),
+      addArcV(arcOuter(tRO, ang), n),
     ]);
   }
   for (let i = 0; i < ARC_N; i++) {
@@ -1080,34 +1150,42 @@ export function createFoldMesh(
     arcIdx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
   }
 
-  // Left cap (tMin side) — flat normal = -T3
-  const leftN = T3.clone().negate();
-  const leftVi: [number, number][] = [];
-  for (let i = 0; i <= ARC_N; i++) {
-    const ang = A * (i / ARC_N);
-    leftVi.push([
-      addArcV(arcInner(tMin, ang), leftN),
-      addArcV(arcOuter(tMin, ang), leftN),
-    ]);
-  }
+  // Left side surface — follows polygon left boundary with per-face normals
   for (let i = 0; i < ARC_N; i++) {
-    const c = leftVi[i], n = leftVi[i + 1];
-    arcIdx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
+    const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+    const p0 = arcInner(cStep.tLI, cStep.ang);
+    const p1 = arcOuter(cStep.tLO, cStep.ang);
+    const p2 = arcInner(nStep.tLI, nStep.ang);
+    const p3 = arcOuter(nStep.tLO, nStep.ang);
+
+    const e1 = new THREE.Vector3().subVectors(p2, p0);
+    const e2 = new THREE.Vector3().subVectors(p1, p0);
+    const fN = new THREE.Vector3().crossVectors(e2, e1).normalize();
+
+    const v0 = addArcV(p0, fN);
+    const v1 = addArcV(p1, fN);
+    const v2 = addArcV(p2, fN);
+    const v3 = addArcV(p3, fN);
+    arcIdx.push(v0, v2, v3, v0, v3, v1);
   }
 
-  // Right cap (tMax side) — flat normal = T3
-  const rightN = T3.clone();
-  const rightVi: [number, number][] = [];
-  for (let i = 0; i <= ARC_N; i++) {
-    const ang = A * (i / ARC_N);
-    rightVi.push([
-      addArcV(arcInner(tMax, ang), rightN),
-      addArcV(arcOuter(tMax, ang), rightN),
-    ]);
-  }
+  // Right side surface — follows polygon right boundary with per-face normals
   for (let i = 0; i < ARC_N; i++) {
-    const c = rightVi[i], n = rightVi[i + 1];
-    arcIdx.push(c[0], c[1], n[1], c[0], n[1], n[0]);
+    const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+    const p0 = arcInner(cStep.tRI, cStep.ang);
+    const p1 = arcOuter(cStep.tRO, cStep.ang);
+    const p2 = arcInner(nStep.tRI, nStep.ang);
+    const p3 = arcOuter(nStep.tRO, nStep.ang);
+
+    const e1 = new THREE.Vector3().subVectors(p2, p0);
+    const e2 = new THREE.Vector3().subVectors(p1, p0);
+    const fN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+    const v0 = addArcV(p0, fN);
+    const v1 = addArcV(p1, fN);
+    const v2 = addArcV(p2, fN);
+    const v3 = addArcV(p3, fN);
+    arcIdx.push(v0, v1, v3, v0, v3, v2);
   }
 
   const arcGeo = new THREE.BufferGeometry();
@@ -1217,7 +1295,7 @@ export function computeFoldBendLines(
     pos(tMin, 0, W_EPS),
   ];
 
-  // Bend end line (angle = A): closed loop around cross-section
+  // Bend end line (angle = A): variable t-range from polygon boundary
   const sA = Math.sin(A);
   const cA = Math.cos(A);
   const e_iu = R * sA;
@@ -1225,12 +1303,17 @@ export function computeFoldBendLines(
   const e_ou = R * sA + TH * sA;
   const e_ow = R * (1 - cA) - TH * cA + W_EPS;
 
+  const dInnerEnd = R * sA;
+  const dOuterEnd = (R + TH) * sA;
+  const rangeI = (dInnerEnd < 0.01) ? [tMin, tMax] : (getPolygonTRangeAtD(locs, dInnerEnd) ?? [tMin, tMax]);
+  const rangeO = (dOuterEnd < 0.01) ? [tMin, tMax] : (getPolygonTRangeAtD(locs, dOuterEnd) ?? rangeI);
+
   const bendEnd = [
-    pos(tMin, e_iu, e_iw),
-    pos(tMax, e_iu, e_iw),
-    pos(tMax, e_ou, e_ow),
-    pos(tMin, e_ou, e_ow),
-    pos(tMin, e_iu, e_iw),
+    pos(rangeI[0], e_iu, e_iw),
+    pos(rangeI[1], e_iu, e_iw),
+    pos(rangeO[1], e_ou, e_ow),
+    pos(rangeO[0], e_ou, e_ow),
+    pos(rangeI[0], e_iu, e_iw),
   ];
 
   return { bendStart, bendEnd };
