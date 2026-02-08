@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { Point2D } from '@/lib/sheetmetal';
-import { createBaseFaceMesh, extractEdges, createFlangeMesh, computeBendLinePositions, PartEdge, Flange } from '@/lib/geometry';
+import { createBaseFaceMesh, extractEdges, createFlangeMesh, computeBendLinePositions, getAllSelectableEdges, PartEdge, Flange } from '@/lib/geometry';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -55,7 +55,7 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
 
 function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flanges }: SheetMetalMeshProps) {
   const geometry = useMemo(() => createBaseFaceMesh(profile, thickness), [profile, thickness]);
-  const edges = useMemo(() => extractEdges(profile, thickness), [profile, thickness]);
+  const edges = useMemo(() => getAllSelectableEdges(profile, thickness, flanges), [profile, thickness, flanges]);
   const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
 
   // Map edges by id for flange rendering
@@ -96,7 +96,7 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
         );
         const edgeLen = edge.start.distanceTo(edge.end);
         const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
-        const angle = Math.atan2(edgeDir.y, edgeDir.x);
+        const edgeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), edgeDir);
 
         const edgeColor = hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : '#3b82f6';
 
@@ -113,7 +113,7 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
 
             <mesh
               position={edgeMid}
-              rotation={[0, 0, angle]}
+              quaternion={edgeQuat}
               onClick={(e) => {
                 e.stopPropagation();
                 onEdgeClick(edge.id);
