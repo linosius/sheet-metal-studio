@@ -9,6 +9,7 @@ function makeEdge(length = 100): PartEdge {
     end: new THREE.Vector3(length, 0, 4),
     faceId: 'base',
     normal: new THREE.Vector3(0, -1, 0), // outward normal
+    faceNormal: new THREE.Vector3(0, 0, 1),
   };
 }
 

@@ -8,7 +8,7 @@ import { SketchCanvas } from '@/components/workspace/SketchCanvas';
 import { PropertiesPanel } from '@/components/workspace/PropertiesPanel';
 import { Viewer3D } from '@/components/workspace/Viewer3D';
 import { useSketchStore } from '@/hooks/useSketchStore';
-import { extractProfile, extractEdges, Flange } from '@/lib/geometry';
+import { extractProfile, extractEdges, getAllSelectableEdges, Flange } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
 
@@ -106,9 +106,9 @@ export default function Workspace() {
   // Get selected edge object for properties panel
   const selectedEdge = useMemo(() => {
     if (!is3DStep || !profile || !selectedEdgeId) return null;
-    const edges = extractEdges(profile, sketch.sheetMetalDefaults.thickness);
+    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges);
     return edges.find(e => e.id === selectedEdgeId) || null;
-  }, [is3DStep, profile, selectedEdgeId, sketch.sheetMetalDefaults.thickness]);
+  }, [is3DStep, profile, selectedEdgeId, sketch.sheetMetalDefaults.thickness, flanges]);
 
   return (
     <div className="h-screen flex flex-col bg-background">

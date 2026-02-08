@@ -9,8 +9,10 @@ export interface PartEdge {
   end: THREE.Vector3;
   /** Which face this edge belongs to */
   faceId: string;
-  /** Direction the flange would extend (outward normal) */
+  /** Direction the flange would extend (outward normal in the face plane) */
   normal: THREE.Vector3;
+  /** Normal of the face this edge belongs to (perpendicular to the surface) */
+  faceNormal: THREE.Vector3;
 }
 
 export interface Flange {
@@ -170,6 +172,7 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
       end: new THREE.Vector3(next.x, next.y, thickness),
       faceId: 'base',
       normal: new THREE.Vector3(nx, ny, 0).normalize(),
+      faceNormal: new THREE.Vector3(0, 0, 1),
     });
   }
 
@@ -202,7 +205,7 @@ export function computeBendLinePositions(
   const R = flange.bendRadius;
 
   const uDir = edge.normal.clone().normalize();
-  const wDir = new THREE.Vector3(0, 0, dirSign);
+  const wDir = edge.faceNormal.clone().multiplyScalar(dirSign);
 
   const W_EPSILON = 0.02;
 
@@ -243,6 +246,103 @@ export function computeBendLinePositions(
   return { bendStart, bendEnd };
 }
 
+/**
+ * Compute the tip edge of a flange — the free edge at the end of the flat extension.
+ * This edge can be selected to add a cascading flange.
+ */
+export function computeFlangeTipEdge(
+  parentEdge: PartEdge,
+  flange: Flange,
+  thickness: number
+): PartEdge {
+  const A = (flange.angle * Math.PI) / 180;
+  const dirSign = flange.direction === 'up' ? 1 : -1;
+  const R = flange.bendRadius;
+  const H = flange.height;
+
+  const uDir = parentEdge.normal.clone().normalize();
+  const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+
+  const sinA = Math.sin(A);
+  const cosA = Math.cos(A);
+
+  // Arc end position (inner surface)
+  const arcEndU = R * sinA;
+  const arcEndW = R * (1 - cosA);
+
+  // Tangent at end of arc (direction of flat extension)
+  const tanU = cosA;
+  const tanW = sinA;
+
+  // Tip position (end of flat extension, inner surface)
+  const tipU = arcEndU + H * tanU;
+  const tipW = arcEndW + H * tanW;
+
+  const tipStart = parentEdge.start.clone()
+    .add(uDir.clone().multiplyScalar(tipU))
+    .add(wDir.clone().multiplyScalar(tipW));
+  const tipEnd = parentEdge.end.clone()
+    .add(uDir.clone().multiplyScalar(tipU))
+    .add(wDir.clone().multiplyScalar(tipW));
+
+  // Tip edge normal = tangent direction (direction a new flange would extend)
+  const tipNormal = uDir.clone().multiplyScalar(tanU)
+    .add(wDir.clone().multiplyScalar(tanW))
+    .normalize();
+
+  // Tip face normal = perpendicular to the flange surface at the tip,
+  // pointing toward the inner (concave) side of the bend
+  const tipFaceNormal = uDir.clone().multiplyScalar(-sinA)
+    .add(wDir.clone().multiplyScalar(cosA))
+    .normalize();
+
+  return {
+    id: `flange_tip_${flange.id}`,
+    start: tipStart,
+    end: tipEnd,
+    faceId: `flange_${flange.id}`,
+    normal: tipNormal,
+    faceNormal: tipFaceNormal,
+  };
+}
+
+/**
+ * Get all selectable edges: base profile edges + flange tip edges.
+ * Supports nested flanges (flange on flange).
+ */
+export function getAllSelectableEdges(
+  profile: Point2D[],
+  thickness: number,
+  flanges: Flange[]
+): PartEdge[] {
+  const baseEdges = extractEdges(profile, thickness);
+  const edgeMap = new Map<string, PartEdge>();
+  baseEdges.forEach(e => edgeMap.set(e.id, e));
+
+  // Process flanges iteratively to resolve nested dependencies
+  const processed = new Set<string>();
+  let remaining = [...flanges];
+  let maxIter = flanges.length + 1;
+
+  while (remaining.length > 0 && maxIter > 0) {
+    maxIter--;
+    const next: Flange[] = [];
+    for (const flange of remaining) {
+      const parentEdge = edgeMap.get(flange.edgeId);
+      if (parentEdge && !processed.has(flange.id)) {
+        const tipEdge = computeFlangeTipEdge(parentEdge, flange, thickness);
+        edgeMap.set(tipEdge.id, tipEdge);
+        processed.add(flange.id);
+      } else if (!parentEdge) {
+        next.push(flange);
+      }
+    }
+    remaining = next;
+  }
+
+  return Array.from(edgeMap.values());
+}
+
 export function createFlangeMesh(
   edge: PartEdge,
   flange: Flange,
@@ -253,8 +353,8 @@ export function createFlangeMesh(
   const R = flange.bendRadius;
   const H = flange.height;
 
-  const uDir = edge.normal.clone().normalize();           // outward from base face
-  const wDir = new THREE.Vector3(0, 0, dirSign);          // perpendicular to base
+  const uDir = edge.normal.clone().normalize();           // outward from face
+  const wDir = edge.faceNormal.clone().multiplyScalar(dirSign); // perpendicular to face
 
   const BEND_SEGMENTS = 12;
   // Small offset to prevent z-fighting between flange base cap and base face edge
