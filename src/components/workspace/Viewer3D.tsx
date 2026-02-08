@@ -30,7 +30,12 @@ interface SheetMetalMeshProps {
 
 function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flange; thickness: number }) {
   const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
-  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
+  const edgesGeo = useMemo(() => {
+    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
+      return null;
+    }
+    return new THREE.EdgesGeometry(geometry, 15);
+  }, [geometry]);
   const bendLines = useMemo(() => {
     const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
     const toTuples = (pts: THREE.Vector3[]) =>
@@ -43,9 +48,11 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
       <mesh geometry={geometry}>
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
-      <lineSegments geometry={edgesGeo}>
-        <lineBasicMaterial color="#475569" linewidth={1} />
-      </lineSegments>
+      {edgesGeo && (
+        <lineSegments geometry={edgesGeo}>
+          <lineBasicMaterial color="#475569" linewidth={1} />
+        </lineSegments>
+      )}
       <Line points={bendLines.start} color="#475569" lineWidth={1.5} />
       <Line points={bendLines.end} color="#475569" lineWidth={1.5} />
     </group>
@@ -66,9 +73,16 @@ function FoldMesh({
     () => createFoldMesh(profile, fold, otherFolds, thickness),
     [profile, fold, otherFolds, thickness],
   );
-  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
+  const edgesGeo = useMemo(() => {
+    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
+      return null;
+    }
+    return new THREE.EdgesGeometry(geometry, 15);
+  }, [geometry]);
 
   const foldFaceId = `fold_face_${fold.id}`;
+
+  if (!geometry) return null;
 
   return (
     <group>
@@ -85,9 +99,11 @@ function FoldMesh({
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
-      <lineSegments geometry={edgesGeo}>
-        <lineBasicMaterial color="#475569" linewidth={1} />
-      </lineSegments>
+      {edgesGeo && (
+        <lineSegments geometry={edgesGeo}>
+          <lineBasicMaterial color="#475569" linewidth={1} />
+        </lineSegments>
+      )}
     </group>
   );
 }
