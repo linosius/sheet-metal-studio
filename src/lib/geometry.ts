@@ -929,45 +929,7 @@ export function isEdgeOnFoldLine(edge: PartEdge, folds: Fold[], profile: Point2D
   return false;
 }
 
-/**
- * Given the moving polygon in local (t, d) coordinates, intersect a horizontal
- * line at the given d value to find the t-range [tLeft, tRight].
- * Returns null if no valid intersection (d beyond polygon extent).
- */
-function getPolygonTRangeAtD(
-  localPoly: { t: number; d: number }[],
-  d: number,
-): [number, number] | null {
-  if (localPoly.length < 3) return null;
 
-  const TOL = 1e-6;
-  const intersections: number[] = [];
-
-  for (let i = 0; i < localPoly.length; i++) {
-    const j = (i + 1) % localPoly.length;
-    const a = localPoly[i];
-    const b = localPoly[j];
-
-    const dMin = Math.min(a.d, b.d);
-    const dMax = Math.max(a.d, b.d);
-
-    // Skip edges that don't span this d level
-    if (d < dMin - TOL || d > dMax + TOL) continue;
-
-    const dRange = b.d - a.d;
-    if (Math.abs(dRange) < TOL) {
-      // Horizontal edge at this d — include both t values
-      intersections.push(a.t, b.t);
-    } else {
-      const frac = Math.max(0, Math.min(1, (d - a.d) / dRange));
-      intersections.push(a.t + frac * (b.t - a.t));
-    }
-  }
-
-  if (intersections.length === 0) return null;
-
-  return [Math.min(...intersections), Math.max(...intersections)];
-}
 
 /**
  * Create a fold mesh from the actual moving polygon shape.
@@ -1088,35 +1050,16 @@ export function createFoldMesh(
 
   const ARC_N = 24;
 
-  // Precompute variable t-ranges at each angular step from the polygon boundary
+  // Uniform t-range for ALL arc steps — the arc is a clean cylinder along the fold line
   interface ArcStep {
     ang: number;
-    tLI: number; tRI: number; // inner surface t-range
-    tLO: number; tRO: number; // outer surface t-range
+    tLI: number; tRI: number;
+    tLO: number; tRO: number;
   }
   const arcSteps: ArcStep[] = [];
   for (let i = 0; i <= ARC_N; i++) {
     const ang = A * (i / ARC_N);
-    const dI = R * Math.sin(ang);
-    const dO = (R + TH) * Math.sin(ang);
-
-    let rangeI: [number, number];
-    let rangeO: [number, number];
-
-    // First step must match base face fold-line edge exactly
-    if (i === 0 || dI < 0.01) {
-      rangeI = [tMin, tMax];
-    } else {
-      rangeI = getPolygonTRangeAtD(locs, dI) ?? [tMin, tMax];
-    }
-
-    if (i === 0 || dO < 0.01) {
-      rangeO = [tMin, tMax];
-    } else {
-      rangeO = getPolygonTRangeAtD(locs, dO) ?? rangeI;
-    }
-
-    arcSteps.push({ ang, tLI: rangeI[0], tRI: rangeI[1], tLO: rangeO[0], tRO: rangeO[1] });
+    arcSteps.push({ ang, tLI: tMin, tRI: tMax, tLO: tMin, tRO: tMax });
   }
 
   // Inner surface — smooth normals pointing toward center of curvature
@@ -1296,7 +1239,7 @@ export function computeFoldBendLines(
     pos(tMin, 0, W_EPS),
   ];
 
-  // Bend end line (angle = A): variable t-range from polygon boundary
+  // Bend end line (angle = A): uniform t-range matching the cylinder
   const sA = Math.sin(A);
   const cA = Math.cos(A);
   const e_iu = R * sA;
@@ -1304,17 +1247,12 @@ export function computeFoldBendLines(
   const e_ou = R * sA + TH * sA;
   const e_ow = R * (1 - cA) - TH * cA + W_EPS;
 
-  const dInnerEnd = R * sA;
-  const dOuterEnd = (R + TH) * sA;
-  const rangeI = (dInnerEnd < 0.01) ? [tMin, tMax] : (getPolygonTRangeAtD(locs, dInnerEnd) ?? [tMin, tMax]);
-  const rangeO = (dOuterEnd < 0.01) ? [tMin, tMax] : (getPolygonTRangeAtD(locs, dOuterEnd) ?? rangeI);
-
   const bendEnd = [
-    pos(rangeI[0], e_iu, e_iw),
-    pos(rangeI[1], e_iu, e_iw),
-    pos(rangeO[1], e_ou, e_ow),
-    pos(rangeO[0], e_ou, e_ow),
-    pos(rangeI[0], e_iu, e_iw),
+    pos(tMin, e_iu, e_iw),
+    pos(tMax, e_iu, e_iw),
+    pos(tMax, e_ou, e_ow),
+    pos(tMin, e_ou, e_ow),
+    pos(tMin, e_iu, e_iw),
   ];
 
   return { bendStart, bendEnd };
