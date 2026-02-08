@@ -86,8 +86,8 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
 
-      {/* Selectable top edges */}
-      {edges.map((edge) => {
+      {/* Selectable edges (hide inner tip edges — they overlap outer tip hitboxes and cause confusion) */}
+      {edges.filter(e => !e.id.includes('_tip_inner_')).map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
         const edgeMid = new THREE.Vector3(
