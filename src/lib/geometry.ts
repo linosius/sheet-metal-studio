@@ -651,7 +651,8 @@ function lineFaceBoundaryIntersections(
 
 /**
  * Classify a sketch line as a potential fold line.
- * A line qualifies if the infinite line through its endpoints intersects two opposite face boundaries.
+ * A line qualifies if the infinite line through its endpoints intersects any two different face boundaries,
+ * fully dividing the face into two regions. This supports angled folds across adjacent edges (e.g. right↔bottom).
  * Returns the clipped intersection points as the fold line start/end.
  */
 export function classifySketchLineAsFold(
@@ -665,14 +666,10 @@ export function classifySketchLineAsFold(
   const e1 = intersections[0].edge;
   const e2 = intersections[1].edge;
 
-  const isOpposite = (
-    (e1 === 'left' && e2 === 'right') ||
-    (e1 === 'right' && e2 === 'left') ||
-    (e1 === 'top' && e2 === 'bottom') ||
-    (e1 === 'bottom' && e2 === 'top')
-  );
+  // Any two different edges is valid — the line divides the face into two regions
+  if (e1 === e2) return null;
 
-  return isOpposite ? { lineStart: intersections[0].point, lineEnd: intersections[1].point } : null;
+  return { lineStart: intersections[0].point, lineEnd: intersections[1].point };
 }
 
 /**
