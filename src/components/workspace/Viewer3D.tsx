@@ -9,7 +9,7 @@ import {
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
-  getFixedProfile,
+  getFixedProfile, computeFoldEdge, getFoldParentId,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -391,18 +391,40 @@ function SheetMetalMesh({
         return <FlangeMesh key={flange.id} edge={edge} flange={flange} thickness={thickness} />;
       })}
 
-      {/* Render folds */}
-      {folds.map((fold, i) => (
-        <FoldMesh
-          key={fold.id}
-          profile={profile}
-          fold={fold}
-          otherFolds={folds.filter((_, j) => j !== i)}
-          thickness={thickness}
-          isSketchMode={isSketchMode}
-          onFaceClick={onFaceClick}
-        />
-      ))}
+      {/* Render folds — child folds get parent's bend transform applied */}
+      {folds.map((fold, i) => {
+        const parentId = getFoldParentId(fold, folds, profile);
+        const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
+
+        const mesh = (
+          <FoldMesh
+            profile={profile}
+            fold={fold}
+            otherFolds={folds.filter((_, j) => j !== i)}
+            thickness={thickness}
+            isSketchMode={isSketchMode}
+            onFaceClick={onFaceClick}
+          />
+        );
+
+        if (parentFold) {
+          const parentEdge = computeFoldEdge(profile, thickness, parentFold);
+          const pivot = parentEdge.start;
+          const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
+          const angleRad = (parentFold.direction === 'up' ? -1 : 1) * (parentFold.angle * Math.PI / 180);
+          const quat = new THREE.Quaternion().setFromAxisAngle(axis, angleRad);
+
+          return (
+            <group key={fold.id} position={[pivot.x, pivot.y, pivot.z]} quaternion={quat}>
+              <group position={[-pivot.x, -pivot.y, -pivot.z]}>
+                {mesh}
+              </group>
+            </group>
+          );
+        }
+
+        return <group key={fold.id}>{mesh}</group>;
+      })}
     </group>
   );
 }

@@ -685,16 +685,37 @@ export function getFoldNormal(fold: Fold, faceWidth: number, faceHeight: number)
   let nx = dy / len;
   let ny = -dx / len;
 
+  // Point normal AWAY from face centroid (toward the smaller/moving portion).
+  // The centroid is almost always in the larger "fixed" region, making this robust
+  // even when the fold line passes through a face corner.
   const midX = (fold.lineStart.x + fold.lineEnd.x) / 2;
   const midY = (fold.lineStart.y + fold.lineEnd.y) / 2;
-  const toFarX = faceWidth - midX;
-  const toFarY = faceHeight - midY;
-  if (nx * toFarX + ny * toFarY < 0) {
+  const centX = faceWidth / 2;
+  const centY = faceHeight / 2;
+  const toCentX = centX - midX;
+  const toCentY = centY - midY;
+
+  // If normal points toward centroid, flip it so it points away (toward moving side)
+  if (nx * toCentX + ny * toCentY > 0) {
     nx = -nx;
     ny = -ny;
   }
 
   return { x: nx, y: ny };
+}
+
+/**
+ * Compute the signed area of a 2D polygon (shoelace formula).
+ */
+export function polygonArea(poly: Point2D[]): number {
+  if (poly.length < 3) return 0;
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    area += poly[i].x * poly[j].y;
+    area -= poly[j].x * poly[i].y;
+  }
+  return Math.abs(area) / 2;
 }
 
 /**
@@ -926,16 +947,7 @@ export function createFoldMesh(
   const faceW = Math.max(...xs) - minX;
   const faceH = Math.max(...ys) - minY;
 
-  // First, remove regions claimed by other folds from the available profile
-  let availableProfile = [...profile];
-  for (const other of otherFolds) {
-    const lp = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
-    const n = getFoldNormal(other, faceW, faceH);
-    availableProfile = clipPolygonByLine(availableProfile, lp, n);
-  }
-  if (availableProfile.length < 3) return new THREE.BufferGeometry();
-
-  // Fold line in face coordinates
+  // Fold line in world coordinates
   const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
   const fe = { x: minX + fold.lineEnd.x, y: minY + fold.lineEnd.y };
   const edx = fe.x - fs.x;
@@ -946,9 +958,25 @@ export function createFoldMesh(
   const tang = { x: edx / eLen, y: edy / eLen };
   const norm = getFoldNormal(fold, faceW, faceH);
 
-  // Get moving polygon from the available (non-overlapping) profile
+  // Get this fold's raw moving polygon from the original profile
   const negN = { x: -norm.x, y: -norm.y };
-  const movPoly = clipPolygonByLine(availableProfile, fs, negN);
+  let movPoly = clipPolygonByLine([...profile], fs, negN);
+  if (movPoly.length < 3) return new THREE.BufferGeometry();
+
+  // Only subtract regions of sub-folds (folds with strictly smaller moving area).
+  // This ensures parent folds carve out space for child folds, while child folds
+  // keep their full region (they get repositioned via cascading transform).
+  const myArea = polygonArea(movPoly);
+  for (const other of otherFolds) {
+    const otherNorm = getFoldNormal(other, faceW, faceH);
+    const otherFs = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
+    const otherNegN = { x: -otherNorm.x, y: -otherNorm.y };
+    const otherMov = clipPolygonByLine([...profile], otherFs, otherNegN);
+    const otherArea = polygonArea(otherMov);
+    if (otherArea < myArea * 0.99) {
+      movPoly = clipPolygonByLine(movPoly, otherFs, otherNorm);
+    }
+  }
   if (movPoly.length < 3) return new THREE.BufferGeometry();
 
   // 3D coordinate system
@@ -1219,4 +1247,47 @@ export function computeStressReliefs(
   }
 
   return reliefs;
+}
+
+/**
+ * Determine if a fold is a sub-fold of another fold (its fold line midpoint
+ * lies inside another fold's moving region). Returns the parent fold's ID, or null.
+ */
+export function getFoldParentId(
+  fold: Fold,
+  allFolds: Fold[],
+  profile: Point2D[],
+): string | null {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const faceW = Math.max(...xs) - minX;
+  const faceH = Math.max(...ys) - minY;
+
+  const foldMidX = minX + (fold.lineStart.x + fold.lineEnd.x) / 2;
+  const foldMidY = minY + (fold.lineStart.y + fold.lineEnd.y) / 2;
+
+  let bestParent: Fold | null = null;
+  let smallestArea = Infinity;
+
+  for (const other of allFolds) {
+    if (other.id === fold.id) continue;
+    const otherNorm = getFoldNormal(other, faceW, faceH);
+    const otherFs = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
+
+    // Is this fold's midpoint on the other fold's moving side?
+    const dot = (foldMidX - otherFs.x) * otherNorm.x + (foldMidY - otherFs.y) * otherNorm.y;
+    if (dot > 1) {
+      const otherNegN = { x: -otherNorm.x, y: -otherNorm.y };
+      const otherMov = clipPolygonByLine([...profile], otherFs, otherNegN);
+      const area = polygonArea(otherMov);
+      if (area < smallestArea) {
+        bestParent = other;
+        smallestArea = area;
+      }
+    }
+  }
+
+  return bestParent?.id ?? null;
 }
