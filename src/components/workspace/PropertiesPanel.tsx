@@ -364,7 +364,7 @@ export function PropertiesPanel({
                 >
                   <div className="font-mono">
                     <span className="text-muted-foreground">
-                      {f.axis.toUpperCase()}-axis @ {f.offset}mm
+                      ({f.lineStart.x.toFixed(0)},{f.lineStart.y.toFixed(0)})→({f.lineEnd.x.toFixed(0)},{f.lineEnd.y.toFixed(0)})
                     </span>
                     <br />
                     {f.angle}° {f.direction}

@@ -5,11 +5,11 @@ import * as THREE from 'three';
 import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
-  createBaseFaceMesh, createFlangeMesh, computeBendLinePositions,
+  createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
-  classifySketchLineAsFold,
-  computeFoldEdge, getFixedProfile, getFoldMovingHeight,
+  classifySketchLineAsFold, isEdgeOnFoldLine,
+  computeFoldEdge, getFixedProfile, getFoldMovingHeights,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -236,14 +236,15 @@ function SheetMetalMesh({
 
   const foldLineEdgeIds = useMemo(() => {
     const ids = new Set<string>();
-    folds.forEach(fold => {
-      const idx = fold.axis === 'x' ? 2 : 1;
-      ids.add(`edge_top_${idx}`);
-      ids.add(`edge_bot_${idx}`);
-      ids.add(`fold_edge_${fold.id}`);
-    });
+    folds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
+    // Also mark fixed profile edges that geometrically correspond to fold lines
+    for (const edge of edges) {
+      if (isEdgeOnFoldLine(edge, folds, profile)) {
+        ids.add(edge.id);
+      }
+    }
     return ids;
-  }, [folds]);
+  }, [folds, edges, profile]);
 
   // Extract entities from non-active face sketches
   const allEntities = useMemo(() => {
