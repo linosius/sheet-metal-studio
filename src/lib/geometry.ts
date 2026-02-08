@@ -519,3 +519,26 @@ export function createFlangeMesh(
   geometry.computeVertexNormals();
   return geometry;
 }
+
+/**
+ * Map an edge ID to its geometric opposite on the other face.
+ * - edge_top_N  ↔  edge_bot_N
+ * - flange_tip_outer_X  ↔  flange_tip_inner_X
+ * - Side edges / unknown → null (no geometric opposite)
+ */
+export function getOppositeEdgeId(edgeId: string): string | null {
+  if (edgeId.startsWith('edge_top_')) return edgeId.replace('edge_top_', 'edge_bot_');
+  if (edgeId.startsWith('edge_bot_')) return edgeId.replace('edge_bot_', 'edge_top_');
+  if (edgeId.includes('_tip_outer_')) return edgeId.replace('_tip_outer_', '_tip_inner_');
+  if (edgeId.includes('_tip_inner_')) return edgeId.replace('_tip_inner_', '_tip_outer_');
+  return null;
+}
+
+/**
+ * Derive the user-facing direction from an edge ID.
+ * Edges on top/outer faces → 'up', edges on bot/inner faces → 'down'.
+ */
+export function getUserFacingDirection(edgeId: string): 'up' | 'down' {
+  if (edgeId.startsWith('edge_bot_') || edgeId.includes('_tip_inner_')) return 'down';
+  return 'up';
+}
