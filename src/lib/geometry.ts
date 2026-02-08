@@ -1103,14 +1103,14 @@ export function createFoldMesh(
     let rangeI: [number, number];
     let rangeO: [number, number];
 
-    // First and last steps must match base face / tip face fold-line edge exactly
-    if (i === 0 || i === ARC_N || dI < 0.01) {
+    // First step must match base face fold-line edge exactly
+    if (i === 0 || dI < 0.01) {
       rangeI = [tMin, tMax];
     } else {
       rangeI = getPolygonTRangeAtD(locs, dI) ?? [tMin, tMax];
     }
 
-    if (i === 0 || i === ARC_N || dO < 0.01) {
+    if (i === 0 || dO < 0.01) {
       rangeO = [tMin, tMax];
     } else {
       rangeO = getPolygonTRangeAtD(locs, dO) ?? rangeI;

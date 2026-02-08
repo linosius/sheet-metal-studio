@@ -1,6 +1,6 @@
 import { Point2D } from '@/lib/sheetmetal';
 import { bendAllowance } from '@/lib/sheetmetal';
-import { Flange, Fold, getFixedProfile, getFoldMovingHeights } from '@/lib/geometry';
+import { Flange, Fold, getFoldNormal, clipPolygonByLine } from '@/lib/geometry';
 
 // ========== Flat Pattern Types ==========
 
@@ -34,8 +34,9 @@ interface FlatEdge {
 
 /**
  * Compute the 2D flat pattern (unfolded) for a sheet metal part.
- * Uses the fixed profile (after folds) as the base, then unfolds
- * folds and flanges outward with bend allowance.
+ * Uses the ORIGINAL profile as the base (not the fixed/clipped profile),
+ * matching Inventor behavior where folds don't change the base face size.
+ * Fold regions are mirrored across the fold line to unfold outward.
  */
 export function computeFlatPattern(
   profile: Point2D[],
@@ -47,16 +48,23 @@ export function computeFlatPattern(
   const regions: FlatRegion[] = [];
   const bendLines: BendLine[] = [];
 
-  // ---- Base face region (fixed profile after folds) ----
-  const fixedProfile = getFixedProfile(profile, folds);
-  regions.push({ id: 'base', type: 'base', polygon: [...fixedProfile] });
+  // ---- Base face region: use the ORIGINAL profile (not clipped by folds) ----
+  regions.push({ id: 'base', type: 'base', polygon: [...profile] });
 
-  // ---- Build flat edge map from fixed profile ----
+  // ---- Profile bounds ----
+  const pxs = profile.map(p => p.x);
+  const pys = profile.map(p => p.y);
+  const profMinX = Math.min(...pxs);
+  const profMinY = Math.min(...pys);
+  const faceWidth = Math.max(...pxs) - profMinX;
+  const faceHeight = Math.max(...pys) - profMinY;
+
+  // ---- Build flat edge map from original profile for flanges ----
   const flatEdges = new Map<string, FlatEdge>();
 
-  for (let i = 0; i < fixedProfile.length; i++) {
-    const curr = fixedProfile[i];
-    const next = fixedProfile[(i + 1) % fixedProfile.length];
+  for (let i = 0; i < profile.length; i++) {
+    const curr = profile[i];
+    const next = profile[(i + 1) % profile.length];
     const dx = next.x - curr.x;
     const dy = next.y - curr.y;
     const len = Math.hypot(dx, dy);
@@ -71,63 +79,47 @@ export function computeFlatPattern(
 
   let bendIndex = 1;
 
-  // ---- Process folds ----
-  const pxs = profile.map(p => p.x);
-  const pys = profile.map(p => p.y);
-  const profMinX = Math.min(...pxs);
-  const profMinY = Math.min(...pys);
-
+  // ---- Process folds: mirror moving polygon across fold line ----
   for (const fold of folds) {
-    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
-
-    // Find fold line edge in fixed profile geometrically
     const foldStart = { x: profMinX + fold.lineStart.x, y: profMinY + fold.lineStart.y };
     const foldEnd = { x: profMinX + fold.lineEnd.x, y: profMinY + fold.lineEnd.y };
 
-    let parentFlatEdge: FlatEdge | undefined;
-    let heightAtStart = startHeight;
-    let heightAtEnd = endHeight;
-    const TOL = 1;
+    const normal = getFoldNormal(fold, faceWidth, faceHeight);
 
-    for (let i = 0; i < fixedProfile.length; i++) {
-      const curr = fixedProfile[i];
-      const next = fixedProfile[(i + 1) % fixedProfile.length];
-      const matchFwd = Math.hypot(curr.x - foldStart.x, curr.y - foldStart.y) < TOL &&
-                       Math.hypot(next.x - foldEnd.x, next.y - foldEnd.y) < TOL;
-      const matchRev = Math.hypot(curr.x - foldEnd.x, curr.y - foldEnd.y) < TOL &&
-                       Math.hypot(next.x - foldStart.x, next.y - foldStart.y) < TOL;
-      if (matchFwd || matchRev) {
-        parentFlatEdge = flatEdges.get(`edge_top_${i}`);
-        if (matchRev) {
-          heightAtStart = endHeight;
-          heightAtEnd = startHeight;
-        }
-        break;
-      }
-    }
+    // Get moving polygon (side where dot >= 0, i.e. the normal/moving side)
+    const negNormal = { x: -normal.x, y: -normal.y };
+    const movingPoly = clipPolygonByLine([...profile], foldStart, negNormal);
 
-    if (!parentFlatEdge) continue;
+    if (movingPoly.length < 3) continue;
 
     const BA = bendAllowance(fold.bendRadius, kFactor, thickness, fold.angle);
-    const { start, end, outward } = parentFlatEdge;
 
-    const totalStart = BA + heightAtStart;
-    const totalEnd = BA + heightAtEnd;
+    // Mirror each vertex across the fold line to the opposite side, offset by BA.
+    // For vertex v at signed distance d from fold line (d >= 0 on moving side):
+    //   new_v = v - normal * (2*d + BA)
+    // This places the moving polygon on the fixed side, extending outward.
+    const unfoldedPoly = movingPoly.map(v => {
+      const vx = v.x - foldStart.x;
+      const vy = v.y - foldStart.y;
+      const d = vx * normal.x + vy * normal.y; // signed distance (>= 0 for moving side)
+      const offset = 2 * d + BA;
+      return {
+        x: v.x - normal.x * offset,
+        y: v.y - normal.y * offset,
+      };
+    });
 
-    const p0 = start;
-    const p1 = end;
-    const p2: Point2D = { x: end.x + outward.x * totalEnd, y: end.y + outward.y * totalEnd };
-    const p3: Point2D = { x: start.x + outward.x * totalStart, y: start.y + outward.y * totalStart };
+    regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: unfoldedPoly });
 
-    regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: [p0, p1, p2, p3] });
-
+    // Bend lines at the fold line position
     bendLines.push({
-      start: { ...start }, end: { ...end },
+      start: { ...foldStart }, end: { ...foldEnd },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
     });
+    // Second bend line offset by BA in -normal direction (toward the unfolded side)
     bendLines.push({
-      start: { x: start.x + outward.x * BA, y: start.y + outward.y * BA },
-      end: { x: end.x + outward.x * BA, y: end.y + outward.y * BA },
+      start: { x: foldStart.x - normal.x * BA, y: foldStart.y - normal.y * BA },
+      end: { x: foldEnd.x - normal.x * BA, y: foldEnd.y - normal.y * BA },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
     });
     bendIndex++;
