@@ -5,8 +5,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { SheetMetalDefaults, MATERIALS } from '@/lib/sheetmetal';
-import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors } from 'lucide-react';
-import { PartEdge, Flange, Fold, getUserFacingDirection } from '@/lib/geometry';
+import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors, PenLine } from 'lucide-react';
+import { PartEdge, Flange, Fold, FaceSketch, FaceSketchLine, getUserFacingDirection } from '@/lib/geometry';
 
 interface PropertiesPanelProps {
   defaults: SheetMetalDefaults;
@@ -22,22 +22,17 @@ interface PropertiesPanelProps {
   onRemoveFlange?: (id: string) => void;
   folds?: Fold[];
   onRemoveFold?: (id: string) => void;
+  subMode?: 'edge' | 'sketch' | 'fold';
+  faceSketches?: FaceSketch[];
+  selectedSketchLine?: FaceSketchLine | null;
 }
 
 export function PropertiesPanel({
-  defaults,
-  onDefaultsChange,
-  gridSize,
-  onGridSizeChange,
-  entityCount,
-  mode = 'sketch',
-  selectedEdge,
-  flanges = [],
-  onAddFlange,
-  onUpdateFlange,
-  onRemoveFlange,
-  folds = [],
-  onRemoveFold,
+  defaults, onDefaultsChange, gridSize, onGridSizeChange,
+  entityCount, mode = 'sketch', selectedEdge,
+  flanges = [], onAddFlange, onUpdateFlange, onRemoveFlange,
+  folds = [], onRemoveFold,
+  subMode, faceSketches = [], selectedSketchLine,
 }: PropertiesPanelProps) {
   const [flangeHeight, setFlangeHeight] = useState(20);
   const [flangeAngle, setFlangeAngle] = useState(90);
@@ -47,6 +42,8 @@ export function PropertiesPanel({
     ? flanges.find(f => f.edgeId === selectedEdge.id)
     : null;
   const edgeHasFlange = !!existingFlange;
+
+  const totalSketchLines = faceSketches.reduce((sum, fs) => sum + fs.lines.length, 0);
 
   return (
     <div className="w-64 border-l bg-card overflow-y-auto flex flex-col">
@@ -129,8 +126,55 @@ export function PropertiesPanel({
           </>
         )}
 
-        {/* ── 3D mode: edge / flange controls ── */}
-        {mode === '3d' && selectedEdge && (
+        {/* ── 3D mode: sub-mode specific content ── */}
+
+        {/* Sketch sub-mode info */}
+        {mode === '3d' && subMode === 'sketch' && (
+          <div className="p-3 rounded-lg bg-muted/50 border">
+            <div className="flex items-center gap-2 mb-2">
+              <PenLine className="h-4 w-4 text-primary" />
+              <p className="text-xs font-semibold">2D Sketch</p>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Click on a face in the 3D view to open the sketch editor. Draw fold lines and set their dimensions.
+            </p>
+          </div>
+        )}
+
+        {/* Fold sub-mode info */}
+        {mode === '3d' && subMode === 'fold' && (
+          <>
+            {selectedSketchLine ? (
+              <div className="p-3 rounded-lg bg-accent/10 border border-accent/30 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Scissors className="h-4 w-4 text-accent" />
+                  <p className="text-xs font-semibold">Selected Line</p>
+                </div>
+                <div className="text-[10px] font-mono text-muted-foreground">
+                  {selectedSketchLine.axis === 'x' ? 'Horizontal' : 'Vertical'} @ {selectedSketchLine.dimension}mm
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  Configure fold parameters in the dialog.
+                </p>
+              </div>
+            ) : (
+              <div className="p-3 rounded-lg bg-muted/50 border">
+                <div className="flex items-center gap-2 mb-2">
+                  <Scissors className="h-4 w-4 text-muted-foreground" />
+                  <p className="text-xs font-semibold">Fold Mode</p>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {totalSketchLines > 0
+                    ? 'Click a sketch line (red dashed) on the 3D model to apply a fold.'
+                    : 'No sketch lines yet. Switch to 2D Sketch mode and draw fold lines first.'}
+                </p>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Edge sub-mode: edge / flange controls */}
+        {mode === '3d' && (subMode === 'edge' || subMode === undefined) && selectedEdge && (
           <>
             <div className="space-y-1">
               <p className="text-xs text-muted-foreground">Selected Edge</p>
@@ -231,12 +275,42 @@ export function PropertiesPanel({
           </>
         )}
 
-        {mode === '3d' && !selectedEdge && (
+        {mode === '3d' && (subMode === 'edge' || subMode === undefined) && !selectedEdge && (
           <div className="p-3 rounded-lg bg-muted/50 border">
             <p className="text-xs text-muted-foreground text-center">
               Click an edge on the 3D part to select it for flange operations
             </p>
           </div>
+        )}
+
+        {/* ── Face sketches summary ── */}
+        {mode === '3d' && totalSketchLines > 0 && (
+          <>
+            <Separator />
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <PenLine className="h-3.5 w-3.5 text-primary" />
+                <p className="text-xs font-semibold">Sketch Lines ({totalSketchLines})</p>
+              </div>
+              {faceSketches.map(fs => fs.lines.map(line => {
+                const hasFold = folds.some(f => f.sketchLineId === line.id);
+                return (
+                  <div key={line.id}
+                    className="flex items-center justify-between p-2 rounded bg-muted/30 border text-[10px]"
+                  >
+                    <div className="font-mono">
+                      <span className="text-muted-foreground">
+                        {line.axis === 'x' ? 'H' : 'V'} @ {line.dimension}mm
+                      </span>
+                      {hasFold && (
+                        <span className="ml-1.5 text-accent font-semibold">✓ folded</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              }))}
+            </div>
+          </>
         )}
 
         {/* ── Folds summary ── */}
@@ -259,6 +333,9 @@ export function PropertiesPanel({
                     </span>
                     <br />
                     {f.angle}° {f.direction}
+                    {f.foldLocation && f.foldLocation !== 'centerline' && (
+                      <span className="ml-1 text-accent">({f.foldLocation})</span>
+                    )}
                   </div>
                   <Button variant="ghost" size="icon" className="h-5 w-5 text-destructive"
                     onClick={() => onRemoveFold?.(f.id)}>
