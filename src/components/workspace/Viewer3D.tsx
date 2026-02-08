@@ -62,22 +62,14 @@ function FoldMesh({
   onFaceClick?: (faceId: string) => void;
 }) {
   const foldEdge = useMemo(() => computeFoldEdge(profile, thickness, fold), [profile, thickness, fold]);
-  const { startHeight, endHeight } = useMemo(() => getFoldMovingHeights(profile, fold), [profile, fold]);
 
   const geometry = useMemo(
-    () => createFoldMesh(
-      foldEdge,
-      fold.angle,
-      fold.direction ?? 'up',
-      fold.bendRadius,
-      thickness,
-      startHeight,
-      endHeight,
-    ),
-    [foldEdge, fold.angle, fold.direction, fold.bendRadius, thickness, startHeight, endHeight],
+    () => createFoldMesh(profile, fold, thickness),
+    [profile, fold, thickness],
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
   const bendLines = useMemo(() => {
+    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
     const virtualFlange: Flange = {
       id: `fold_${fold.id}`,
       edgeId: foldEdge.id,
@@ -90,7 +82,7 @@ function FoldMesh({
     const toTuples = (pts: THREE.Vector3[]) =>
       pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
     return { start: toTuples(bendStart), end: toTuples(bendEnd) };
-  }, [foldEdge, fold, thickness, startHeight, endHeight]);
+  }, [foldEdge, fold, profile, thickness]);
 
   const foldFaceId = `fold_face_${fold.id}`;
 
