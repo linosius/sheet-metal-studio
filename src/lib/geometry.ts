@@ -1103,13 +1103,14 @@ export function createFoldMesh(
     let rangeI: [number, number];
     let rangeO: [number, number];
 
-    if (dI < 0.01) {
+    // First and last steps must match base face / tip face fold-line edge exactly
+    if (i === 0 || i === ARC_N || dI < 0.01) {
       rangeI = [tMin, tMax];
     } else {
       rangeI = getPolygonTRangeAtD(locs, dI) ?? [tMin, tMax];
     }
 
-    if (dO < 0.01) {
+    if (i === 0 || i === ARC_N || dO < 0.01) {
       rangeO = [tMin, tMax];
     } else {
       rangeO = getPolygonTRangeAtD(locs, dO) ?? rangeI;
@@ -1160,13 +1161,13 @@ export function createFoldMesh(
 
     const e1 = new THREE.Vector3().subVectors(p2, p0);
     const e2 = new THREE.Vector3().subVectors(p1, p0);
-    const fN = new THREE.Vector3().crossVectors(e2, e1).normalize();
+    const fN = new THREE.Vector3().crossVectors(e1, e2).normalize();
 
     const v0 = addArcV(p0, fN);
     const v1 = addArcV(p1, fN);
     const v2 = addArcV(p2, fN);
     const v3 = addArcV(p3, fN);
-    arcIdx.push(v0, v2, v3, v0, v3, v1);
+    arcIdx.push(v0, v1, v3, v0, v3, v2);
   }
 
   // Right side surface — follows polygon right boundary with per-face normals
@@ -1179,13 +1180,13 @@ export function createFoldMesh(
 
     const e1 = new THREE.Vector3().subVectors(p2, p0);
     const e2 = new THREE.Vector3().subVectors(p1, p0);
-    const fN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+    const fN = new THREE.Vector3().crossVectors(e2, e1).normalize();
 
     const v0 = addArcV(p0, fN);
     const v1 = addArcV(p1, fN);
     const v2 = addArcV(p2, fN);
     const v3 = addArcV(p3, fN);
-    arcIdx.push(v0, v1, v3, v0, v3, v2);
+    arcIdx.push(v0, v2, v3, v0, v3, v1);
   }
 
   const arcGeo = new THREE.BufferGeometry();
