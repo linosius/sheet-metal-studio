@@ -22,9 +22,9 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick }: She
       {/* Solid face */}
       <mesh geometry={geometry}>
         <meshStandardMaterial
-          color="#94a3b8"
-          metalness={0.6}
-          roughness={0.35}
+          color="#c8cdd3"
+          metalness={0.4}
+          roughness={0.45}
           side={THREE.DoubleSide}
         />
       </mesh>
