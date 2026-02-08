@@ -584,37 +584,95 @@ export interface FaceSketch {
 function pointOnFaceEdge(
   p: Point2D, faceWidth: number, faceHeight: number, tol: number
 ): 'left' | 'right' | 'top' | 'bottom' | null {
-  if (p.x < tol && p.y >= -tol && p.y <= faceHeight + tol) return 'left';
-  if (p.x > faceWidth - tol && p.y >= -tol && p.y <= faceHeight + tol) return 'right';
-  if (p.y < tol && p.x >= -tol && p.x <= faceWidth + tol) return 'bottom';
-  if (p.y > faceHeight - tol && p.x >= -tol && p.x <= faceWidth + tol) return 'top';
+  if (Math.abs(p.x) < tol && p.y >= -tol && p.y <= faceHeight + tol) return 'left';
+  if (Math.abs(p.x - faceWidth) < tol && p.y >= -tol && p.y <= faceHeight + tol) return 'right';
+  if (Math.abs(p.y) < tol && p.x >= -tol && p.x <= faceWidth + tol) return 'bottom';
+  if (Math.abs(p.y - faceHeight) < tol && p.x >= -tol && p.x <= faceWidth + tol) return 'top';
   return null;
 }
 
 /**
+ * Find where an infinite line (through p1, p2) intersects a face boundary rectangle [0,0]→[w,h].
+ * Returns the two intersection points and which edges they lie on, or null if fewer than 2 intersections.
+ */
+function lineFaceBoundaryIntersections(
+  p1: Point2D, p2: Point2D, faceWidth: number, faceHeight: number
+): { point: Point2D; edge: 'left' | 'right' | 'top' | 'bottom' }[] | null {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const TOL = 0.5;
+  const hits: { point: Point2D; edge: 'left' | 'right' | 'top' | 'bottom'; t: number }[] = [];
+
+  // Check intersection with each boundary edge
+  const edges: { edge: 'left' | 'right' | 'top' | 'bottom'; solve: () => { t: number; point: Point2D } | null }[] = [
+    { edge: 'left', solve: () => {
+      if (Math.abs(dx) < 1e-9) return null;
+      const t = (0 - p1.x) / dx;
+      const y = p1.y + t * dy;
+      return (y >= -TOL && y <= faceHeight + TOL) ? { t, point: { x: 0, y: Math.max(0, Math.min(faceHeight, y)) } } : null;
+    }},
+    { edge: 'right', solve: () => {
+      if (Math.abs(dx) < 1e-9) return null;
+      const t = (faceWidth - p1.x) / dx;
+      const y = p1.y + t * dy;
+      return (y >= -TOL && y <= faceHeight + TOL) ? { t, point: { x: faceWidth, y: Math.max(0, Math.min(faceHeight, y)) } } : null;
+    }},
+    { edge: 'bottom', solve: () => {
+      if (Math.abs(dy) < 1e-9) return null;
+      const t = (0 - p1.y) / dy;
+      const x = p1.x + t * dx;
+      return (x >= -TOL && x <= faceWidth + TOL) ? { t, point: { x: Math.max(0, Math.min(faceWidth, x)), y: 0 } } : null;
+    }},
+    { edge: 'top', solve: () => {
+      if (Math.abs(dy) < 1e-9) return null;
+      const t = (faceHeight - p1.y) / dy;
+      const x = p1.x + t * dx;
+      return (x >= -TOL && x <= faceWidth + TOL) ? { t, point: { x: Math.max(0, Math.min(faceWidth, x)), y: faceHeight } } : null;
+    }},
+  ];
+
+  for (const { edge, solve } of edges) {
+    const result = solve();
+    if (result) {
+      // Avoid duplicate hits at corners (same point)
+      const isDup = hits.some(h => Math.hypot(h.point.x - result.point.x, h.point.y - result.point.y) < TOL);
+      if (!isDup) {
+        hits.push({ ...result, edge });
+      }
+    }
+  }
+
+  if (hits.length < 2) return null;
+
+  // Sort by parameter t so the order follows line direction
+  hits.sort((a, b) => a.t - b.t);
+  return [{ point: hits[0].point, edge: hits[0].edge }, { point: hits[1].point, edge: hits[1].edge }];
+}
+
+/**
  * Classify a sketch line as a potential fold line.
- * A line qualifies if its endpoints lie on opposite face boundaries (left↔right or top↔bottom).
- * Returns the line coordinates or null if not valid.
+ * A line qualifies if the infinite line through its endpoints intersects two opposite face boundaries.
+ * Returns the clipped intersection points as the fold line start/end.
  */
 export function classifySketchLineAsFold(
   line: FaceSketchLine,
   faceWidth: number,
   faceHeight: number,
 ): { lineStart: Point2D; lineEnd: Point2D } | null {
-  const TOL = 1;
-  const startEdge = pointOnFaceEdge(line.start, faceWidth, faceHeight, TOL);
-  const endEdge = pointOnFaceEdge(line.end, faceWidth, faceHeight, TOL);
+  const intersections = lineFaceBoundaryIntersections(line.start, line.end, faceWidth, faceHeight);
+  if (!intersections) return null;
 
-  if (!startEdge || !endEdge) return null;
+  const e1 = intersections[0].edge;
+  const e2 = intersections[1].edge;
 
   const isOpposite = (
-    (startEdge === 'left' && endEdge === 'right') ||
-    (startEdge === 'right' && endEdge === 'left') ||
-    (startEdge === 'top' && endEdge === 'bottom') ||
-    (startEdge === 'bottom' && endEdge === 'top')
+    (e1 === 'left' && e2 === 'right') ||
+    (e1 === 'right' && e2 === 'left') ||
+    (e1 === 'top' && e2 === 'bottom') ||
+    (e1 === 'bottom' && e2 === 'top')
   );
 
-  return isOpposite ? { lineStart: { ...line.start }, lineEnd: { ...line.end } } : null;
+  return isOpposite ? { lineStart: intersections[0].point, lineEnd: intersections[1].point } : null;
 }
 
 /**
