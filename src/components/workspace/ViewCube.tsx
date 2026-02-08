@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { forwardRef, useMemo } from 'react';
 import * as THREE from 'three';
 
 // Three.js BoxGeometry material order: +X, -X, +Y, -Y, +Z, -Z
@@ -33,7 +33,7 @@ function createFaceTexture(label: string): THREE.CanvasTexture {
   return texture;
 }
 
-export function ViewCube() {
+export const ViewCube = forwardRef<THREE.Group>(function ViewCube(_props, ref) {
   const materials = useMemo(() => {
     return FACE_LABELS.map((label) => {
       const texture = createFaceTexture(label);
@@ -47,7 +47,7 @@ export function ViewCube() {
   }, []);
 
   return (
-    <group>
+    <group ref={ref}>
       <mesh>
         <boxGeometry args={[1.8, 1.8, 1.8]} />
         {materials.map((mat, i) => (
@@ -59,4 +59,4 @@ export function ViewCube() {
       </lineSegments>
     </group>
   );
-}
+});
