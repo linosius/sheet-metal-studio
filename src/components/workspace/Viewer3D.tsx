@@ -20,18 +20,14 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
 
-  // Compute both bend lines on the outer surface
+  // Compute both bend lines as closed loops around the cross-section
   const bendLines = useMemo(() => {
     const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
+    const toTuples = (pts: THREE.Vector3[]) =>
+      pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
     return {
-      start: [
-        [bendStart[0].x, bendStart[0].y, bendStart[0].z] as [number, number, number],
-        [bendStart[1].x, bendStart[1].y, bendStart[1].z] as [number, number, number],
-      ],
-      end: [
-        [bendEnd[0].x, bendEnd[0].y, bendEnd[0].z] as [number, number, number],
-        [bendEnd[1].x, bendEnd[1].y, bendEnd[1].z] as [number, number, number],
-      ],
+      start: toTuples(bendStart),
+      end: toTuples(bendEnd),
     };
   }, [edge, flange, thickness]);
 
