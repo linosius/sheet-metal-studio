@@ -9,7 +9,7 @@ import {
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
-  computeFoldEdge, getFixedProfile, getFoldMovingHeights,
+  getFixedProfile,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -61,28 +61,11 @@ function FoldMesh({
   isSketchMode?: boolean;
   onFaceClick?: (faceId: string) => void;
 }) {
-  const foldEdge = useMemo(() => computeFoldEdge(profile, thickness, fold), [profile, thickness, fold]);
-
   const geometry = useMemo(
     () => createFoldMesh(profile, fold, thickness),
     [profile, fold, thickness],
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
-  const bendLines = useMemo(() => {
-    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
-    const virtualFlange: Flange = {
-      id: `fold_${fold.id}`,
-      edgeId: foldEdge.id,
-      height: Math.max(startHeight, endHeight),
-      angle: fold.angle,
-      direction: 'up',
-      bendRadius: fold.bendRadius,
-    };
-    const { bendStart, bendEnd } = computeBendLinePositions(foldEdge, virtualFlange, thickness);
-    const toTuples = (pts: THREE.Vector3[]) =>
-      pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
-    return { start: toTuples(bendStart), end: toTuples(bendEnd) };
-  }, [foldEdge, fold, profile, thickness]);
 
   const foldFaceId = `fold_face_${fold.id}`;
 
@@ -104,8 +87,6 @@ function FoldMesh({
       <lineSegments geometry={edgesGeo}>
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
-      <Line points={bendLines.start} color="#475569" lineWidth={1.5} />
-      <Line points={bendLines.end} color="#475569" lineWidth={1.5} />
     </group>
   );
 }
