@@ -1,54 +1,81 @@
 
 
-# Add Both Bend Lines to Flange Rendering
+# Fix: Bi-directional Flange Bending via Edge Remapping
 
 ## Problem
-In real sheet metal CAD (like Inventor), a bend zone is defined by **two tangent lines** on the outer surface:
-1. **Bend start line** -- where the flat base face transitions into the curved bend arc
-2. **Bend end line** -- where the curved bend arc transitions into the flat flange extension
+The direction toggle (Up/Down) in the properties panel does not work. Selecting "Down" produces self-intersecting geometry because the bend arc curves into the existing material. The current workaround forces all bends to "Up," making the toggle useless.
 
-Currently, the app only draws a single crease line near the bend start. This doesn't look realistic and doesn't match the standard CAD representation.
+## Root Cause
+The geometry engine sweeps the bend arc along `wDir = faceNormal * dirSign`. When `dirSign = -1` (down), the arc goes INTO the part body, creating invalid overlap. This is a fundamental mathematical constraint — you cannot flip the arc direction on the same edge without self-intersection.
 
-## Solution
+## Solution: Edge Remapping
+Instead of changing the arc math, when the user selects "Down," we transparently remap the flange to the **opposite face's edge** with direction "Up." This produces the exact geometry the user expects:
 
-### File: `src/components/workspace/Viewer3D.tsx`
-Replace the single crease line with two properly computed bend lines:
+```text
+User Intent                    Internal Mapping
+-------------------------------------------------------------
+edge_top_0 + Down      --->   edge_bot_0 + Up
+edge_bot_0 + Down      --->   edge_top_0 + Up
+flange_tip_outer_X + Down -->  flange_tip_inner_X + Up
+flange_tip_inner_X + Down -->  flange_tip_outer_X + Up
+side edges + Down      --->   Keep as Up (no opposite face)
+```
 
-**Bend Start Line (Line 1):**
-- Located on the **outer surface** at the beginning of the bend arc (angle t=0)
-- Position: edge start/end points offset by `thickness` in the `-w` direction (the outer surface at bend start)
-- This line sits right where the flat base face ends and the curve begins
+## Changes
 
-**Bend End Line (Line 2):**
-- Located on the **outer surface** at the end of the bend arc (angle t=bendAngle)
-- Position: calculated using the arc geometry -- at `u = R*sin(A) + thickness*sin(A)` and `w = R*(1-cos(A)) - thickness*cos(A)` relative to the edge
-- This line sits where the curve ends and the flat flange extension begins
+### 1. New helper function in `src/lib/geometry.ts`
 
-Both lines will be rendered as subtle dark lines (matching the wireframe color `#475569`) across the full edge length, giving the same visual as Inventor's bend zone indicators.
+Add a `getOppositeEdgeId()` function that maps edge IDs to their counterpart on the opposite face:
 
-### File: `src/lib/geometry.ts`
-Add a utility function `computeBendLinePositions` that returns the 3D coordinates of both bend lines for a given edge+flange combination. This keeps the math centralized and reusable (it will also be useful later for the unfold/flat pattern step).
+- `edge_top_N` maps to `edge_bot_N` (and vice versa)
+- `flange_tip_outer_X` maps to `flange_tip_inner_X` (and vice versa)
+- Side edges return `null` (no geometric opposite)
+
+This is a pure string operation using the existing naming convention.
+
+### 2. Update `handleAddFlange` in `src/pages/Workspace.tsx`
+
+Replace the current "always force up" logic with the edge-remapping approach:
+
+- When `direction === 'down'`:
+  1. Call `getOppositeEdgeId(selectedEdgeId)` to find the opposite edge
+  2. Verify the opposite edge exists in the current edge set and doesn't already have a flange
+  3. Store the flange on the opposite edge with `direction: 'up'`
+  4. Show a toast explaining what happened (e.g., "Flange placed on bottom edge to achieve downward bend")
+- When `direction === 'up'`: keep existing behavior (no change)
+- For side edges where no opposite exists: keep as "up" with a toast
+
+### 3. Update direction display in `PropertiesPanel`
+
+When viewing an existing flange, show the **user-facing direction** rather than the internal "up" value. Since the flange is always stored as "up" internally, the displayed direction should be derived from which face the edge belongs to:
+
+- Flanges on `edge_top_*` or `flange_tip_outer_*` edges show as "Up"
+- Flanges on `edge_bot_*` or `flange_tip_inner_*` edges show as "Down"
+
+This ensures the UI matches what the user selected.
+
+### 4. Allow editing direction on existing flanges
+
+When the user toggles direction on an existing flange, apply the same remapping logic: remove the flange from its current edge and re-add it on the opposite edge.
+
+## What Does NOT Change
+
+- **Geometry engine** (`createFlangeMesh`, `computeFlangeTipEdges`, `computeBendLinePositions`) — no math changes needed
+- **Edge selection and rendering** in `Viewer3D.tsx` — inner tip edges remain visible and selectable
+- **Unfold logic** — flat pattern computation stays the same since stored flanges always use `direction: 'up'`
 
 ## Technical Details
 
-The bend line positions on the outer surface are computed in the same `(u, w)` coordinate system already used by `createFlangeMesh`:
+The `getOppositeEdgeId` function:
 
 ```text
-u = edge outward normal direction
-w = Z * dirSign (up or down)
-
-Bend Start (outer surface, t=0):
-  u_start = thickness * sin(0) = 0
-  w_start = R*(1-cos(0)) - thickness*cos(0) = -thickness
-
-Bend End (outer surface, t=bendAngle):
-  u_end = R*sin(A) + thickness*sin(A)
-  w_end = R*(1-cos(A)) - thickness*cos(A)
+function getOppositeEdgeId(edgeId: string): string | null
+  if edgeId starts with "edge_top_" -> replace with "edge_bot_"
+  if edgeId starts with "edge_bot_" -> replace with "edge_top_"
+  if edgeId contains "_tip_outer_" -> replace with "_tip_inner_"
+  if edgeId contains "_tip_inner_" -> replace with "_tip_outer_"
+  otherwise -> return null (side edges, unknown)
 ```
 
-Each line is drawn from `edge.start + offset` to `edge.end + offset` where offset uses the `uDir` and `wDir` vectors scaled by the computed `(u, w)` values.
-
-### Files Changed
-1. `src/lib/geometry.ts` -- Add `computeBendLinePositions()` helper
-2. `src/components/workspace/Viewer3D.tsx` -- Replace single crease with two bend lines using the helper
+Edge existence validation is important: the opposite edge must exist in `getAllSelectableEdges()` and must not already have a flange attached.
 
