@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine, Undo2, Redo2 } from 'lucide-react';
+import { ExportPanel } from '@/components/workspace/ExportPanel';
 import { Button } from '@/components/ui/button';
 import { WorkflowBar, WorkflowStep } from '@/components/workspace/WorkflowBar';
 import { SketchToolbar } from '@/components/workspace/SketchToolbar';
@@ -500,6 +501,13 @@ export default function Workspace() {
               )}
             </>
           )}
+          {isUnfoldStep && (
+            <Button size="sm" className="h-8 text-xs gap-1.5"
+              onClick={() => setCurrentStep('export')}>
+              Export
+              <ArrowRight className="h-3 w-3" />
+            </Button>
+          )}
         </div>
       </header>
 
@@ -628,14 +636,15 @@ export default function Workspace() {
             />
           )}
 
-          {/* Export placeholder */}
-          {currentStep === 'export' && (
-            <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <p className="text-lg font-medium mb-2">Export Options</p>
-                <p className="text-sm">Coming in the next iteration</p>
-              </div>
-            </div>
+          {/* Export panel */}
+          {currentStep === 'export' && profile && (
+            <ExportPanel
+              profile={profile}
+              thickness={sketch.sheetMetalDefaults.thickness}
+              flanges={flanges}
+              folds={folds}
+              kFactor={sketch.sheetMetalDefaults.kFactor}
+            />
           )}
         </div>
 
