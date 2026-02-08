@@ -7,6 +7,7 @@ import { SketchToolbar } from '@/components/workspace/SketchToolbar';
 import { SketchCanvas } from '@/components/workspace/SketchCanvas';
 import { PropertiesPanel } from '@/components/workspace/PropertiesPanel';
 import { Viewer3D } from '@/components/workspace/Viewer3D';
+import { UnfoldViewer } from '@/components/workspace/UnfoldViewer';
 import { useSketchStore } from '@/hooks/useSketchStore';
 import { extractProfile, extractEdges, getAllSelectableEdges, Flange } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
@@ -45,7 +46,7 @@ export default function Workspace() {
   }, [sketch.entities, sketch.sheetMetalDefaults.thickness]);
 
   const handleStepClick = useCallback((step: WorkflowStep) => {
-    if ((step === 'base-face' || step === 'flanges') && !profile) {
+    if ((step === 'base-face' || step === 'flanges' || step === 'unfold') && !profile) {
       toast.error('Convert your sketch to a base face first');
       return;
     }
@@ -126,6 +127,7 @@ export default function Workspace() {
   }, [currentStep, sketch.setActiveTool]);
 
   const is3DStep = currentStep === 'base-face' || currentStep === 'flanges';
+  const isUnfoldStep = currentStep === 'unfold';
 
   // Get selected edge object for properties panel
   const selectedEdge = useMemo(() => {
@@ -186,6 +188,16 @@ export default function Workspace() {
                   <ArrowRight className="h-3 w-3" />
                 </Button>
               )}
+              {currentStep === 'flanges' && (
+                <Button
+                  size="sm"
+                  className="h-8 text-xs gap-1.5"
+                  onClick={() => setCurrentStep('unfold')}
+                >
+                  Unfold
+                  <ArrowRight className="h-3 w-3" />
+                </Button>
+              )}
             </>
           )}
         </div>
@@ -233,14 +245,21 @@ export default function Workspace() {
           />
         )}
 
-        {/* Unfold / Export placeholders */}
-        {(currentStep === 'unfold' || currentStep === 'export') && (
+        {/* Unfold Viewer */}
+        {isUnfoldStep && profile && (
+          <UnfoldViewer
+            profile={profile}
+            thickness={sketch.sheetMetalDefaults.thickness}
+            flanges={flanges}
+            kFactor={sketch.sheetMetalDefaults.kFactor}
+          />
+        )}
+
+        {/* Export placeholder */}
+        {currentStep === 'export' && (
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
-              <p className="text-lg font-medium mb-2">
-                {currentStep === 'unfold' && 'Flat Pattern View'}
-                {currentStep === 'export' && 'Export Options'}
-              </p>
+              <p className="text-lg font-medium mb-2">Export Options</p>
               <p className="text-sm">Coming in the next iteration</p>
             </div>
           </div>
