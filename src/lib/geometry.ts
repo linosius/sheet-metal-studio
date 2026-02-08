@@ -380,9 +380,11 @@ export function computeFlangeTipEdges(
 export function getAllSelectableEdges(
   profile: Point2D[],
   thickness: number,
-  flanges: Flange[]
+  flanges: Flange[],
+  folds: Fold[] = []
 ): PartEdge[] {
-  const baseEdges = extractEdges(profile, thickness);
+  const fixedProfile = getFixedProfile(profile, folds);
+  const baseEdges = extractEdges(fixedProfile, thickness);
   const edgeMap = new Map<string, PartEdge>();
   baseEdges.forEach(e => edgeMap.set(e.id, e));
 
@@ -518,6 +520,112 @@ export function createFlangeMesh(
   const geometry = indexed.toNonIndexed();
   geometry.computeVertexNormals();
   return geometry;
+}
+
+// ========== Fold Model ==========
+
+export interface Fold {
+  id: string;
+  /** Distance from the min edge along the fold axis */
+  offset: number;
+  /** Fold line is parallel to this axis */
+  axis: 'x' | 'y';
+  /** Fold angle in degrees */
+  angle: number;
+  /** Bend direction relative to face */
+  direction: 'up' | 'down';
+  /** Inner bend radius */
+  bendRadius: number;
+}
+
+/**
+ * Compute the virtual PartEdge at a fold line position.
+ * Direction 'up' → edge on top face (z=thickness), 'down' → bottom face (z=0).
+ */
+export function computeFoldEdge(
+  profile: Point2D[],
+  thickness: number,
+  fold: Fold
+): PartEdge {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+  const z = fold.direction === 'up' ? thickness : 0;
+  const faceNormal = fold.direction === 'up'
+    ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(0, 0, -1);
+
+  if (fold.axis === 'x') {
+    const y = minY + fold.offset;
+    return {
+      id: `fold_edge_${fold.id}`,
+      start: new THREE.Vector3(minX, y, z),
+      end: new THREE.Vector3(maxX, y, z),
+      faceId: fold.direction === 'up' ? 'base_top' : 'base_bot',
+      normal: new THREE.Vector3(0, 1, 0),
+      faceNormal,
+    };
+  } else {
+    const x = minX + fold.offset;
+    return {
+      id: `fold_edge_${fold.id}`,
+      start: new THREE.Vector3(x, minY, z),
+      end: new THREE.Vector3(x, maxY, z),
+      faceId: fold.direction === 'up' ? 'base_top' : 'base_bot',
+      normal: new THREE.Vector3(1, 0, 0),
+      faceNormal,
+    };
+  }
+}
+
+/**
+ * Get the fixed (remaining) profile after applying folds.
+ * Each fold trims the profile from the max side of its axis.
+ */
+export function getFixedProfile(profile: Point2D[], folds: Fold[]): Point2D[] {
+  if (folds.length === 0) return profile;
+
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  let minX = Math.min(...xs), maxX = Math.max(...xs);
+  let minY = Math.min(...ys), maxY = Math.max(...ys);
+
+  for (const fold of folds) {
+    if (fold.axis === 'x') {
+      const foldY = minY + fold.offset;
+      if (foldY < maxY) maxY = foldY;
+    } else {
+      const foldX = minX + fold.offset;
+      if (foldX < maxX) maxX = foldX;
+    }
+  }
+
+  return [
+    { x: minX, y: minY },
+    { x: maxX, y: minY },
+    { x: maxX, y: maxY },
+    { x: minX, y: maxY },
+  ];
+}
+
+/**
+ * Get the moving portion height for a fold (distance from fold line to original edge).
+ */
+export function getFoldMovingHeight(profile: Point2D[], fold: Fold): number {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+
+  if (fold.axis === 'x') {
+    const minY = Math.min(...ys);
+    const maxY = Math.max(...ys);
+    return maxY - (minY + fold.offset);
+  } else {
+    const minX = Math.min(...xs);
+    const maxX = Math.max(...xs);
+    return maxX - (minX + fold.offset);
+  }
 }
 
 /**
