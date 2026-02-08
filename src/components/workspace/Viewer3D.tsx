@@ -3,23 +3,58 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewport, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { Point2D } from '@/lib/sheetmetal';
-import { createBaseFaceMesh, extractEdges, PartEdge } from '@/lib/geometry';
+import { createBaseFaceMesh, extractEdges, createFlangeMesh, PartEdge, Flange } from '@/lib/geometry';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
   thickness: number;
   selectedEdgeId: string | null;
   onEdgeClick: (edgeId: string) => void;
+  flanges: Flange[];
 }
 
-function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick }: SheetMetalMeshProps) {
+function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flange; thickness: number }) {
+  const geometry = useMemo(
+    () => createFlangeMesh(edge, flange, thickness),
+    [edge, flange, thickness]
+  );
+  const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
+
+  return (
+    <group>
+      <mesh geometry={geometry}>
+        <meshStandardMaterial
+          color="#a8b8c8"
+          metalness={0.4}
+          roughness={0.45}
+          side={THREE.DoubleSide}
+        />
+      </mesh>
+      <lineSegments geometry={edgesGeo}>
+        <lineBasicMaterial color="#475569" linewidth={1} />
+      </lineSegments>
+    </group>
+  );
+}
+
+function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flanges }: SheetMetalMeshProps) {
   const geometry = useMemo(() => createBaseFaceMesh(profile, thickness), [profile, thickness]);
   const edges = useMemo(() => extractEdges(profile, thickness), [profile, thickness]);
   const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
 
+  // Map edges by id for flange rendering
+  const edgeMap = useMemo(() => {
+    const map = new Map<string, PartEdge>();
+    edges.forEach(e => map.set(e.id, e));
+    return map;
+  }, [edges]);
+
+  // Edges that already have a flange
+  const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
+
   return (
     <group>
-      {/* Solid face */}
+      {/* Solid base face */}
       <mesh geometry={geometry}>
         <meshStandardMaterial
           color="#c8cdd3"
@@ -37,30 +72,29 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick }: She
       {/* Selectable top edges */}
       {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
+        const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
         const edgeMid = new THREE.Vector3(
           (edge.start.x + edge.end.x) / 2,
           (edge.start.y + edge.end.y) / 2,
           (edge.start.z + edge.end.z) / 2,
         );
         const edgeLen = edge.start.distanceTo(edge.end);
-
-        // Build rotation to align box with edge direction
         const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
         const angle = Math.atan2(edgeDir.y, edgeDir.x);
 
+        const edgeColor = hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : '#3b82f6';
+
         return (
           <group key={edge.id}>
-            {/* Visible edge line using drei Line */}
             <Line
               points={[
                 [edge.start.x, edge.start.y, edge.start.z],
                 [edge.end.x, edge.end.y, edge.end.z],
               ]}
-              color={isSelected ? '#a855f7' : '#3b82f6'}
+              color={edgeColor}
               lineWidth={isSelected ? 3 : 2}
             />
 
-            {/* Invisible wider hitbox for clicking */}
             <mesh
               position={edgeMid}
               rotation={[0, 0, angle]}
@@ -80,21 +114,20 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick }: She
               <meshBasicMaterial transparent opacity={0} />
             </mesh>
 
-            {/* Edge direction indicator (small arrow showing normal) */}
             {isSelected && (
               <arrowHelper
-                args={[
-                  edge.normal,
-                  edgeMid,
-                  10,
-                  0xa855f7,
-                  3,
-                  2,
-                ]}
+                args={[edge.normal, edgeMid, 10, 0xa855f7, 3, 2]}
               />
             )}
           </group>
         );
+      })}
+
+      {/* Render flanges */}
+      {flanges.map((flange) => {
+        const edge = edgeMap.get(flange.edgeId);
+        if (!edge) return null;
+        return <FlangeMesh key={flange.id} edge={edge} flange={flange} thickness={thickness} />;
       })}
     </group>
   );
@@ -115,9 +148,10 @@ interface Viewer3DProps {
   thickness: number;
   selectedEdgeId: string | null;
   onEdgeClick: (edgeId: string) => void;
+  flanges: Flange[];
 }
 
-export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick }: Viewer3DProps) {
+export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick, flanges }: Viewer3DProps) {
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
     const ys = profile.map(p => p.y);
@@ -148,6 +182,7 @@ export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick }: Vi
           thickness={thickness}
           selectedEdgeId={selectedEdgeId}
           onEdgeClick={onEdgeClick}
+          flanges={flanges}
         />
 
         <Grid

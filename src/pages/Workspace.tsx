@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, ArrowLeft, ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -8,8 +8,8 @@ import { SketchCanvas } from '@/components/workspace/SketchCanvas';
 import { PropertiesPanel } from '@/components/workspace/PropertiesPanel';
 import { Viewer3D } from '@/components/workspace/Viewer3D';
 import { useSketchStore } from '@/hooks/useSketchStore';
-import { extractProfile, extractEdges } from '@/lib/geometry';
-import { Point2D } from '@/lib/sheetmetal';
+import { extractProfile, extractEdges, Flange } from '@/lib/geometry';
+import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
 
 export default function Workspace() {
@@ -20,13 +20,14 @@ export default function Workspace() {
   // 3D state
   const [profile, setProfile] = useState<Point2D[] | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [flanges, setFlanges] = useState<Flange[]>([]);
 
   // Try to extract profile from sketch entities
   const canConvert = useMemo(() => {
     return extractProfile(sketch.entities) !== null;
   }, [sketch.entities]);
 
-  const handleConvertToBaseFace = () => {
+  const handleConvertToBaseFace = useCallback(() => {
     const p = extractProfile(sketch.entities);
     if (!p) {
       toast.error('Cannot create base face', {
@@ -35,19 +36,55 @@ export default function Workspace() {
       return;
     }
     setProfile(p);
+    setFlanges([]); // Reset flanges when creating new base face
+    setSelectedEdgeId(null);
     setCurrentStep('base-face');
     toast.success('Base face created', {
       description: `Profile with ${p.length} vertices, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
     });
-  };
+  }, [sketch.entities, sketch.sheetMetalDefaults.thickness]);
 
-  const handleStepClick = (step: WorkflowStep) => {
+  const handleStepClick = useCallback((step: WorkflowStep) => {
     if ((step === 'base-face' || step === 'flanges') && !profile) {
       toast.error('Convert your sketch to a base face first');
       return;
     }
     setCurrentStep(step);
-  };
+  }, [profile]);
+
+  // Flange operations
+  const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
+    if (!selectedEdgeId) return;
+
+    // Check if edge already has a flange
+    if (flanges.some(f => f.edgeId === selectedEdgeId)) {
+      toast.error('Edge already has a flange');
+      return;
+    }
+
+    const flange: Flange = {
+      id: generateId(),
+      edgeId: selectedEdgeId,
+      height,
+      angle,
+      direction,
+      bendRadius: sketch.sheetMetalDefaults.bendRadius,
+    };
+
+    setFlanges(prev => [...prev, flange]);
+    toast.success('Flange added', {
+      description: `${height}mm × ${angle}° ${direction} on ${selectedEdgeId}`,
+    });
+  }, [selectedEdgeId, flanges, sketch.sheetMetalDefaults.bendRadius]);
+
+  const handleUpdateFlange = useCallback((id: string, updates: Partial<Flange>) => {
+    setFlanges(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
+  }, []);
+
+  const handleRemoveFlange = useCallback((id: string) => {
+    setFlanges(prev => prev.filter(f => f.id !== id));
+    toast.success('Flange removed');
+  }, []);
 
   // Keyboard shortcuts for tools
   useEffect(() => {
@@ -65,6 +102,13 @@ export default function Workspace() {
   }, [currentStep, sketch.setActiveTool]);
 
   const is3DStep = currentStep === 'base-face' || currentStep === 'flanges';
+
+  // Get selected edge object for properties panel
+  const selectedEdge = useMemo(() => {
+    if (!is3DStep || !profile || !selectedEdgeId) return null;
+    const edges = extractEdges(profile, sketch.sheetMetalDefaults.thickness);
+    return edges.find(e => e.id === selectedEdgeId) || null;
+  }, [is3DStep, profile, selectedEdgeId, sketch.sheetMetalDefaults.thickness]);
 
   return (
     <div className="h-screen flex flex-col bg-background">
@@ -99,14 +143,26 @@ export default function Workspace() {
             </Button>
           )}
           {is3DStep && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-xs"
-              onClick={() => setCurrentStep('sketch')}
-            >
-              Back to Sketch
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => setCurrentStep('sketch')}
+              >
+                Back to Sketch
+              </Button>
+              {currentStep === 'base-face' && (
+                <Button
+                  size="sm"
+                  className="h-8 text-xs gap-1.5"
+                  onClick={() => setCurrentStep('flanges')}
+                >
+                  Add Flanges
+                  <ArrowRight className="h-3 w-3" />
+                </Button>
+              )}
+            </>
           )}
         </div>
       </header>
@@ -149,6 +205,7 @@ export default function Workspace() {
             thickness={sketch.sheetMetalDefaults.thickness}
             selectedEdgeId={selectedEdgeId}
             onEdgeClick={setSelectedEdgeId}
+            flanges={flanges}
           />
         )}
 
@@ -173,11 +230,11 @@ export default function Workspace() {
           onGridSizeChange={sketch.setGridSize}
           entityCount={sketch.entities.length}
           mode={is3DStep ? '3d' : 'sketch'}
-          selectedEdge={
-            is3DStep && profile && selectedEdgeId
-              ? extractEdges(profile, sketch.sheetMetalDefaults.thickness).find(e => e.id === selectedEdgeId) || null
-              : null
-          }
+          selectedEdge={selectedEdge}
+          flanges={flanges}
+          onAddFlange={handleAddFlange}
+          onUpdateFlange={handleUpdateFlange}
+          onRemoveFlange={handleRemoveFlange}
         />
       </div>
     </div>
