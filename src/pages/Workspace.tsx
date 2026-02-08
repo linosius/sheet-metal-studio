@@ -70,18 +70,18 @@ export default function Workspace() {
 
     // Auto-correct direction to prevent self-intersection:
     // Base edges: "down" bends through the material, force "up".
-    // Outer tip edges: "down" bends back into parent material, force "up".
+    // Outer tip edges: both "up" and "down" are valid — "down" creates a return bend
+    //   that folds back over the flange (doesn't intersect material).
     // Side edges: both directions are valid (bend along parent edge), no correction.
     // Inner tip edges: hidden from selection, but if reached, force "down".
     let correctedDirection = direction;
     const isBaseEdge = edge.faceId.startsWith('base_');
-    const isOuterTipEdge = edge.faceId.startsWith('flange_outer_');
     const isInnerTipEdge = edge.faceId.startsWith('flange_inner_');
 
-    if ((isBaseEdge || isOuterTipEdge) && direction === 'down') {
+    if (isBaseEdge && direction === 'down') {
       correctedDirection = 'up';
       toast.info('Direction adjusted to "Up"', {
-        description: 'Flanges on this edge always bend away from the face to prevent self-intersection.',
+        description: 'Flanges on base edges always bend away from the face to prevent self-intersection.',
       });
     } else if (isInnerTipEdge && direction === 'up') {
       correctedDirection = 'down';
