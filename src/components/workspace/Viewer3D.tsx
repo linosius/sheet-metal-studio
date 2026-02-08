@@ -156,7 +156,7 @@ function SketchLine3D({
         dashSize={2}
         gapSize={1}
       />
-      {isFoldMode && !hasFold && isFoldQualified && (
+      {isFoldMode && !hasFold && (
         <mesh
           position={midpoint}
           quaternion={quaternion}
@@ -164,7 +164,7 @@ function SketchLine3D({
           onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
           onPointerOut={() => { document.body.style.cursor = 'default'; }}
         >
-          <boxGeometry args={[length, 3, 3]} />
+          <boxGeometry args={[length, 4, 4]} />
           <meshBasicMaterial transparent opacity={0} />
         </mesh>
       )}
