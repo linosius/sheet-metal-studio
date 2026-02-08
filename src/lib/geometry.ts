@@ -195,7 +195,7 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
 export function computeBendLinePositions(
   edge: PartEdge,
   flange: Flange,
-  thickness: number
+  _thickness: number
 ): { bendStart: [THREE.Vector3, THREE.Vector3]; bendEnd: [THREE.Vector3, THREE.Vector3] } {
   const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
@@ -204,12 +204,17 @@ export function computeBendLinePositions(
   const uDir = edge.normal.clone().normalize();
   const wDir = new THREE.Vector3(0, 0, dirSign);
 
-  const W_EPSILON = 0.01;
+  const W_EPSILON = 0.02;
 
-  // Bend Start Line (outer surface at t=0):
-  // u = 0, w = R*(1-cos(0)) - thickness*cos(0) = -thickness
+  // Both bend lines sit on the INNER (visible/top) surface of the sheet.
+  // In the (u,w) coordinate system used by createFlangeMesh:
+  //   inner surface traces radius R around center (0, R).
+
+  // Bend Start Line (inner surface at t=0):
+  // The point where the flat base face ends and the curve begins.
+  // iu = R*sin(0) = 0,  iw = R*(1-cos(0)) = 0
   const startU = 0;
-  const startW = -thickness + W_EPSILON;
+  const startW = W_EPSILON;
 
   const bendStartA = edge.start.clone()
     .add(uDir.clone().multiplyScalar(startU))
@@ -218,12 +223,13 @@ export function computeBendLinePositions(
     .add(uDir.clone().multiplyScalar(startU))
     .add(wDir.clone().multiplyScalar(startW));
 
-  // Bend End Line (outer surface at t=bendAngle):
-  // u = R*sin(A) + thickness*sin(A), w = R*(1-cos(A)) - thickness*cos(A)
+  // Bend End Line (inner surface at t=bendAngle):
+  // The point where the curve ends and the flat flange begins.
+  // iu = R*sin(A),  iw = R*(1-cos(A))
   const sinA = Math.sin(bendAngleRad);
   const cosA = Math.cos(bendAngleRad);
-  const endU = R * sinA + thickness * sinA;
-  const endW = R * (1 - cosA) - thickness * cosA + W_EPSILON;
+  const endU = R * sinA;
+  const endW = R * (1 - cosA) + W_EPSILON;
 
   const bendEndA = edge.start.clone()
     .add(uDir.clone().multiplyScalar(endU))
