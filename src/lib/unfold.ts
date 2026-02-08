@@ -94,20 +94,13 @@ export function computeFlatPattern(
 
     const BA = bendAllowance(fold.bendRadius, kFactor, thickness, fold.angle);
 
-    // Mirror each vertex across the fold line to the opposite side, offset by BA.
-    // For vertex v at signed distance d from fold line (d >= 0 on moving side):
-    //   new_v = v - normal * (2*d + BA)
-    // This places the moving polygon on the fixed side, extending outward.
-    const unfoldedPoly = movingPoly.map(v => {
-      const vx = v.x - foldStart.x;
-      const vy = v.y - foldStart.y;
-      const d = vx * normal.x + vy * normal.y; // signed distance (>= 0 for moving side)
-      const offset = 2 * d + BA;
-      return {
-        x: v.x - normal.x * offset,
-        y: v.y - normal.y * offset,
-      };
-    });
+    // Shift the moving polygon outward by BA in the normal direction.
+    // This preserves the original base face dimensions and places the
+    // unfolded region on the moving side with a BA-sized gap.
+    const unfoldedPoly = movingPoly.map(v => ({
+      x: v.x + normal.x * BA,
+      y: v.y + normal.y * BA,
+    }));
 
     regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: unfoldedPoly });
 
@@ -116,10 +109,10 @@ export function computeFlatPattern(
       start: { ...foldStart }, end: { ...foldEnd },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
     });
-    // Second bend line offset by BA in -normal direction (toward the unfolded side)
+    // Second bend line offset by BA in +normal direction (on the moving/unfolded side)
     bendLines.push({
-      start: { x: foldStart.x - normal.x * BA, y: foldStart.y - normal.y * BA },
-      end: { x: foldEnd.x - normal.x * BA, y: foldEnd.y - normal.y * BA },
+      start: { x: foldStart.x + normal.x * BA, y: foldStart.y + normal.y * BA },
+      end: { x: foldEnd.x + normal.x * BA, y: foldEnd.y + normal.y * BA },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
     });
     bendIndex++;
