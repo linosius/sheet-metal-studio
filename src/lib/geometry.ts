@@ -939,7 +939,7 @@ export function createFoldMesh(
   fold: Fold,
   otherFolds: Fold[],
   thickness: number,
-): THREE.BufferGeometry {
+): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -947,25 +947,20 @@ export function createFoldMesh(
   const faceW = Math.max(...xs) - minX;
   const faceH = Math.max(...ys) - minY;
 
-  // Fold line in world coordinates
   const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
   const fe = { x: minX + fold.lineEnd.x, y: minY + fold.lineEnd.y };
   const edx = fe.x - fs.x;
   const edy = fe.y - fs.y;
   const eLen = Math.hypot(edx, edy);
-  if (eLen < 0.01) return new THREE.BufferGeometry();
+  if (eLen < 0.01) return null;
 
   const tang = { x: edx / eLen, y: edy / eLen };
   const norm = getFoldNormal(fold, faceW, faceH);
 
-  // Get this fold's raw moving polygon from the original profile
   const negN = { x: -norm.x, y: -norm.y };
   let movPoly = clipPolygonByLine([...profile], fs, negN);
-  if (movPoly.length < 3) return new THREE.BufferGeometry();
+  if (movPoly.length < 3) return null;
 
-  // Only subtract regions of sub-folds (folds with strictly smaller moving area).
-  // This ensures parent folds carve out space for child folds, while child folds
-  // keep their full region (they get repositioned via cascading transform).
   const myArea = polygonArea(movPoly);
   for (const other of otherFolds) {
     const otherNorm = getFoldNormal(other, faceW, faceH);
@@ -977,9 +972,8 @@ export function createFoldMesh(
       movPoly = clipPolygonByLine(movPoly, otherFs, otherNorm);
     }
   }
-  if (movPoly.length < 3) return new THREE.BufferGeometry();
+  if (movPoly.length < 3) return null;
 
-  // 3D coordinate system
   const dir = fold.direction ?? 'up';
   const z0 = dir === 'up' ? thickness : 0;
   const dSign = dir === 'up' ? 1 : -1;
@@ -995,17 +989,12 @@ export function createFoldMesh(
   const cosA = Math.cos(A);
   const EPS = 0.01;
 
-  // Convert 2D vertex to fold-line-local coordinates (t = along line, d = perpendicular)
   function toLocal(p: Point2D): { t: number; d: number } {
     const vx = p.x - fs.x;
     const vy = p.y - fs.y;
-    return {
-      t: vx * tang.x + vy * tang.y,
-      d: vx * norm.x + vy * norm.y,
-    };
+    return { t: vx * tang.x + vy * tang.y, d: vx * norm.x + vy * norm.y };
   }
 
-  // 3D position of a tip vertex (after the bend arc) — inner surface
   function tipInner(t: number, d: number): THREE.Vector3 {
     const dd = Math.max(0, d);
     const u = R * sinA + dd * cosA;
@@ -1014,7 +1003,6 @@ export function createFoldMesh(
       .add(U3.clone().multiplyScalar(u)).add(W3.clone().multiplyScalar(w));
   }
 
-  // 3D position of a tip vertex — outer surface
   function tipOuter(t: number, d: number): THREE.Vector3 {
     const dd = Math.max(0, d);
     const u = R * sinA + dd * cosA + TH * sinA;
@@ -1023,7 +1011,6 @@ export function createFoldMesh(
       .add(U3.clone().multiplyScalar(u)).add(W3.clone().multiplyScalar(w));
   }
 
-  // 3D position on the arc at a given t-along-line and arc angle
   function arcInner(t: number, ang: number): THREE.Vector3 {
     const u = R * Math.sin(ang);
     const w = R * (1 - Math.cos(ang)) + EPS;
@@ -1040,76 +1027,213 @@ export function createFoldMesh(
       .add(U3.clone().multiplyScalar(u)).add(W3.clone().multiplyScalar(w));
   }
 
-  // === Build mesh ===
-  const verts: number[] = [];
-  const idx: number[] = [];
-  let vi = 0;
-  function addV(v: THREE.Vector3): number {
-    verts.push(v.x, v.y, v.z);
-    return vi++;
-  }
-
   const locs = movPoly.map(p => toLocal(p));
-  const DTOL = 1.0; // tolerance for "on fold line"
+  const DTOL = 1.0;
 
-  // Find fold-line extent (t range of vertices near the fold line)
   const foldTs = locs.filter(l => l.d < DTOL).map(l => l.t);
-  if (foldTs.length < 2) return new THREE.BufferGeometry();
+  if (foldTs.length < 2) return null;
   const tMin = Math.min(...foldTs);
   const tMax = Math.max(...foldTs);
 
-  // --- Part 1: Arc surface (bend zone) ---
-  const ARC_N = 12;
-  // Create arc strip vertices: for each arc step, 4 vertices (tMin inner/outer, tMax inner/outer)
-  const arcVi: number[][] = [];
+  // ═══════ ARC GEOMETRY — smooth shading with per-vertex normals ═══════
+  const arcVerts: number[] = [];
+  const arcNormals: number[] = [];
+  const arcIdx: number[] = [];
+  let arcVi = 0;
+  function addArcV(v: THREE.Vector3, n: THREE.Vector3): number {
+    arcVerts.push(v.x, v.y, v.z);
+    arcNormals.push(n.x, n.y, n.z);
+    return arcVi++;
+  }
+
+  const ARC_N = 24;
+
+  // Inner surface — normals point toward the center of curvature (concave side)
+  const innerVi: [number, number][] = [];
   for (let i = 0; i <= ARC_N; i++) {
     const ang = A * (i / ARC_N);
-    arcVi.push([
-      addV(arcInner(tMin, ang)),  // 0: tMin inner
-      addV(arcOuter(tMin, ang)),  // 1: tMin outer
-      addV(arcInner(tMax, ang)),  // 2: tMax inner
-      addV(arcOuter(tMax, ang)),  // 3: tMax outer
+    const n = U3.clone().multiplyScalar(-Math.sin(ang))
+      .add(W3.clone().multiplyScalar(Math.cos(ang)));
+    innerVi.push([
+      addArcV(arcInner(tMin, ang), n),
+      addArcV(arcInner(tMax, ang), n),
     ]);
   }
-
   for (let i = 0; i < ARC_N; i++) {
-    const c = arcVi[i];
-    const n = arcVi[i + 1];
-    // Inner surface
-    idx.push(c[0], c[2], n[2], c[0], n[2], n[0]);
-    // Outer surface (reversed winding)
-    idx.push(c[1], n[1], n[3], c[1], n[3], c[3]);
-    // Left end cap (tMin side)
-    idx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
-    // Right end cap (tMax side)
-    idx.push(c[2], c[3], n[3], c[2], n[3], n[2]);
+    const c = innerVi[i], n = innerVi[i + 1];
+    arcIdx.push(c[0], c[1], n[1], c[0], n[1], n[0]);
   }
 
-  // --- Part 2: Tip faces (inner and outer, from the actual polygon shape) ---
-  const tipI = locs.map(l => addV(tipInner(l.t, l.d)));
-  const tipO = locs.map(l => addV(tipOuter(l.t, l.d)));
-
-  // Fan triangulation (moving polygon is convex from rectangle clipping)
-  for (let i = 1; i < tipI.length - 1; i++) {
-    idx.push(tipI[0], tipI[i], tipI[i + 1]);
-    idx.push(tipO[0], tipO[i + 1], tipO[i]); // reversed winding
+  // Outer surface — normals point away from center (convex side)
+  const outerVi: [number, number][] = [];
+  for (let i = 0; i <= ARC_N; i++) {
+    const ang = A * (i / ARC_N);
+    const n = U3.clone().multiplyScalar(Math.sin(ang))
+      .add(W3.clone().multiplyScalar(-Math.cos(ang)));
+    outerVi.push([
+      addArcV(arcOuter(tMin, ang), n),
+      addArcV(arcOuter(tMax, ang), n),
+    ]);
+  }
+  for (let i = 0; i < ARC_N; i++) {
+    const c = outerVi[i], n = outerVi[i + 1];
+    arcIdx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
   }
 
-  // --- Part 3: Side walls (non-fold-line edges of the moving polygon) ---
+  // Left cap (tMin side) — flat normal = -T3
+  const leftN = T3.clone().negate();
+  const leftVi: [number, number][] = [];
+  for (let i = 0; i <= ARC_N; i++) {
+    const ang = A * (i / ARC_N);
+    leftVi.push([
+      addArcV(arcInner(tMin, ang), leftN),
+      addArcV(arcOuter(tMin, ang), leftN),
+    ]);
+  }
+  for (let i = 0; i < ARC_N; i++) {
+    const c = leftVi[i], n = leftVi[i + 1];
+    arcIdx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
+  }
+
+  // Right cap (tMax side) — flat normal = T3
+  const rightN = T3.clone();
+  const rightVi: [number, number][] = [];
+  for (let i = 0; i <= ARC_N; i++) {
+    const ang = A * (i / ARC_N);
+    rightVi.push([
+      addArcV(arcInner(tMax, ang), rightN),
+      addArcV(arcOuter(tMax, ang), rightN),
+    ]);
+  }
+  for (let i = 0; i < ARC_N; i++) {
+    const c = rightVi[i], n = rightVi[i + 1];
+    arcIdx.push(c[0], c[1], n[1], c[0], n[1], n[0]);
+  }
+
+  const arcGeo = new THREE.BufferGeometry();
+  arcGeo.setAttribute('position', new THREE.Float32BufferAttribute(arcVerts, 3));
+  arcGeo.setAttribute('normal', new THREE.Float32BufferAttribute(arcNormals, 3));
+  arcGeo.setIndex(arcIdx);
+
+  // ═══════ TIP GEOMETRY — flat shading for sharp edges ═══════
+  const tipVerts: number[] = [];
+  const tipIdx: number[] = [];
+  let tipVi = 0;
+  function addTipV(v: THREE.Vector3): number {
+    tipVerts.push(v.x, v.y, v.z);
+    return tipVi++;
+  }
+
+  const tI = locs.map(l => addTipV(tipInner(l.t, l.d)));
+  const tO = locs.map(l => addTipV(tipOuter(l.t, l.d)));
+
+  for (let i = 1; i < tI.length - 1; i++) {
+    tipIdx.push(tI[0], tI[i], tI[i + 1]);
+    tipIdx.push(tO[0], tO[i + 1], tO[i]);
+  }
+
   for (let i = 0; i < locs.length; i++) {
     const j = (i + 1) % locs.length;
-    if (locs[i].d < DTOL && locs[j].d < DTOL) continue; // skip fold-line edge
-    idx.push(tipI[i], tipI[j], tipO[j]);
-    idx.push(tipI[i], tipO[j], tipO[i]);
+    if (locs[i].d < DTOL && locs[j].d < DTOL) continue;
+    tipIdx.push(tI[i], tI[j], tO[j]);
+    tipIdx.push(tI[i], tO[j], tO[i]);
   }
 
-  // Build final geometry
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geo.setIndex(idx);
-  const result = geo.toNonIndexed();
-  result.computeVertexNormals();
-  return result;
+  const tipIndexed = new THREE.BufferGeometry();
+  tipIndexed.setAttribute('position', new THREE.Float32BufferAttribute(tipVerts, 3));
+  tipIndexed.setIndex(tipIdx);
+  const tipGeo = tipIndexed.toNonIndexed();
+  tipGeo.computeVertexNormals();
+
+  return { arc: arcGeo, tip: tipGeo };
+}
+
+/**
+ * Compute the 3D positions for both bend tangent lines of a fold,
+ * wrapping around the cross-section at the start and end of the bend arc.
+ */
+export function computeFoldBendLines(
+  profile: Point2D[],
+  fold: Fold,
+  thickness: number,
+): { bendStart: THREE.Vector3[]; bendEnd: THREE.Vector3[] } {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const faceW = Math.max(...xs) - minX;
+  const faceH = Math.max(...ys) - minY;
+
+  const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
+  const fe = { x: minX + fold.lineEnd.x, y: minY + fold.lineEnd.y };
+  const edx = fe.x - fs.x;
+  const edy = fe.y - fs.y;
+  const eLen = Math.hypot(edx, edy);
+  if (eLen < 0.01) return { bendStart: [], bendEnd: [] };
+
+  const tang = { x: edx / eLen, y: edy / eLen };
+  const norm = getFoldNormal(fold, faceW, faceH);
+
+  const negN = { x: -norm.x, y: -norm.y };
+  const movPoly = clipPolygonByLine([...profile], fs, negN);
+  if (movPoly.length < 3) return { bendStart: [], bendEnd: [] };
+
+  const locs = movPoly.map(p => {
+    const vx = p.x - fs.x;
+    const vy = p.y - fs.y;
+    return { t: vx * tang.x + vy * tang.y, d: vx * norm.x + vy * norm.y };
+  });
+  const foldTs = locs.filter(l => l.d < 1.0).map(l => l.t);
+  if (foldTs.length < 2) return { bendStart: [], bendEnd: [] };
+  const tMin = Math.min(...foldTs);
+  const tMax = Math.max(...foldTs);
+
+  const dir = fold.direction ?? 'up';
+  const dSign = dir === 'up' ? 1 : -1;
+  const z0 = dir === 'up' ? thickness : 0;
+  const O = new THREE.Vector3(fs.x, fs.y, z0);
+  const T3 = new THREE.Vector3(tang.x, tang.y, 0);
+  const U3 = new THREE.Vector3(norm.x, norm.y, 0);
+  const W3 = new THREE.Vector3(0, 0, dSign);
+
+  const A = (fold.angle * Math.PI) / 180;
+  const R = fold.bendRadius;
+  const TH = thickness;
+  const W_EPS = 0.02;
+
+  function pos(t: number, u: number, w: number): THREE.Vector3 {
+    return O.clone()
+      .add(T3.clone().multiplyScalar(t))
+      .add(U3.clone().multiplyScalar(u))
+      .add(W3.clone().multiplyScalar(w));
+  }
+
+  // Bend start line (angle = 0): closed loop around cross-section
+  const bendStart = [
+    pos(tMin, 0, W_EPS),
+    pos(tMax, 0, W_EPS),
+    pos(tMax, 0, -TH + W_EPS),
+    pos(tMin, 0, -TH + W_EPS),
+    pos(tMin, 0, W_EPS),
+  ];
+
+  // Bend end line (angle = A): closed loop around cross-section
+  const sA = Math.sin(A);
+  const cA = Math.cos(A);
+  const e_iu = R * sA;
+  const e_iw = R * (1 - cA) + W_EPS;
+  const e_ou = R * sA + TH * sA;
+  const e_ow = R * (1 - cA) - TH * cA + W_EPS;
+
+  const bendEnd = [
+    pos(tMin, e_iu, e_iw),
+    pos(tMax, e_iu, e_iw),
+    pos(tMax, e_ou, e_ow),
+    pos(tMin, e_ou, e_ow),
+    pos(tMin, e_iu, e_iw),
+  ];
+
+  return { bendStart, bendEnd };
 }
 
 /**
