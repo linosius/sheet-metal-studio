@@ -83,8 +83,8 @@ export default function Workspace() {
     if (subMode !== 'sketch' || currentStep !== 'fold-flanges') return;
     if (activeFaceSketch) return; // Already sketching
 
-    // Support base faces and fold faces
-    if (faceId === 'base_top' || faceId === 'base_bot' || faceId.startsWith('fold_face_')) {
+    // Support base faces, fold faces, and flange faces
+    if (faceId === 'base_top' || faceId === 'base_bot' || faceId.startsWith('fold_face_') || faceId.startsWith('flange_face_')) {
       const existing = faceSketches.find(fs => fs.faceId === faceId);
       setSketchEntities(existing ? [...existing.entities] : []);
       setActiveFaceSketch(faceId);
@@ -162,6 +162,24 @@ export default function Workspace() {
         origin: { x: 0, y: 0 } as Point2D,
         width: lineLen,
         height: Math.max(startHeight, endHeight),
+      };
+    }
+
+    if (activeFaceSketch.startsWith('flange_face_')) {
+      const flangeId = activeFaceSketch.replace('flange_face_', '');
+      const flange = flanges.find(f => f.id === flangeId);
+      if (!flange) return null;
+
+      const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
+      const parentEdge = edges.find(e => e.id === flange.edgeId);
+      if (!parentEdge) return null;
+
+      const edgeLen = parentEdge.start.distanceTo(parentEdge.end);
+
+      return {
+        origin: { x: 0, y: 0 } as Point2D,
+        width: edgeLen,
+        height: flange.height,
       };
     }
 

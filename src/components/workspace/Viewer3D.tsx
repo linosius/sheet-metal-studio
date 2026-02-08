@@ -28,7 +28,10 @@ interface SheetMetalMeshProps {
   activeSketchFaceId?: string | null;
 }
 
-function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flange; thickness: number }) {
+function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick }: {
+  edge: PartEdge; flange: Flange; thickness: number;
+  isSketchMode?: boolean; onFaceClick?: (faceId: string) => void;
+}) {
   const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
   const edgesGeo = useMemo(() => {
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
@@ -43,9 +46,21 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
     return { start: toTuples(bendStart), end: toTuples(bendEnd) };
   }, [edge, flange, thickness]);
 
+  const flangeFaceId = `flange_face_${flange.id}`;
+
   return (
     <group>
-      <mesh geometry={geometry}>
+      <mesh
+        geometry={geometry}
+        onClick={(e) => {
+          if (isSketchMode && onFaceClick) {
+            e.stopPropagation();
+            onFaceClick(flangeFaceId);
+          }
+        }}
+        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+      >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
       {edgesGeo && (
@@ -390,7 +405,16 @@ function SheetMetalMesh({
       {flanges.map((flange) => {
         const edge = edgeMap.get(flange.edgeId);
         if (!edge) return null;
-        return <FlangeMesh key={flange.id} edge={edge} flange={flange} thickness={thickness} />;
+        return (
+          <FlangeMesh
+            key={flange.id}
+            edge={edge}
+            flange={flange}
+            thickness={thickness}
+            isSketchMode={isSketchMode}
+            onFaceClick={onFaceClick}
+          />
+        );
       })}
 
       {/* Render folds — child folds get parent's bend transform applied */}
@@ -542,6 +566,7 @@ export function Viewer3D({
         {/* Sketch plane when active */}
         {sketchPlaneActive && sketchFaceOrigin && onSketchAddEntity && onSketchRemoveEntity && onSketchSelectEntity && (() => {
           const isFoldFace = sketchFaceId?.startsWith('fold_face_');
+          const isFlangeFace = sketchFaceId?.startsWith('flange_face_');
           
           if (isFoldFace) {
             const foldId = sketchFaceId!.replace('fold_face_', '');
@@ -562,6 +587,67 @@ export function Viewer3D({
             m.makeBasis(tangent, bentNormal, bentUp);
             m.setPosition(foldEdge.start);
             
+            return (
+              <group matrixAutoUpdate={false} matrix={m}>
+                <FaceSketchPlane
+                  faceOrigin={{ x: 0, y: 0 }}
+                  faceWidth={sketchFaceWidth!}
+                  faceHeight={sketchFaceHeight!}
+                  thickness={0}
+                  surfaceZ={0.02}
+                  worldTransform={m}
+                  entities={sketchEntities || []}
+                  activeTool={sketchActiveTool || 'line'}
+                  gridSize={sketchGridSize || 5}
+                  snapEnabled={sketchSnapEnabled ?? true}
+                  onAddEntity={onSketchAddEntity}
+                  onRemoveEntity={onSketchRemoveEntity}
+                  selectedIds={sketchSelectedIds || []}
+                  onSelectEntity={onSketchSelectEntity}
+                />
+              </group>
+            );
+          }
+
+          if (isFlangeFace) {
+            const flangeId = sketchFaceId!.replace('flange_face_', '');
+            const flange = flanges.find(f => f.id === flangeId);
+            if (!flange) return null;
+
+            // Find the parent edge for this flange
+            const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds);
+            const parentEdge = allEdges.find(e => e.id === flange.edgeId);
+            if (!parentEdge) return null;
+
+            const bendAngleRad = (flange.angle * Math.PI) / 180;
+            const dirSign = flange.direction === 'up' ? 1 : -1;
+            const R = flange.bendRadius;
+
+            const uDir = parentEdge.normal.clone().normalize();
+            const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+            const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
+
+            // Arc end position (inner surface)
+            const sinA = Math.sin(bendAngleRad);
+            const cosA = Math.cos(bendAngleRad);
+            const arcEndU = R * sinA;
+            const arcEndW = R * (1 - cosA);
+
+            // Tangent direction at end of arc (flat extension direction)
+            const flangeExtDir = uDir.clone().multiplyScalar(cosA).add(wDir.clone().multiplyScalar(sinA)).normalize();
+            // Surface normal of the flange (perpendicular to flange surface)
+            const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
+
+            // Origin of the flange flat surface (at arc end, inner surface)
+            const flangeOrigin = parentEdge.start.clone()
+              .add(uDir.clone().multiplyScalar(arcEndU))
+              .add(wDir.clone().multiplyScalar(arcEndW + 0.01));
+
+            // Build transform: X=edgeDir, Y=flangeExtDir, Z=flangeSurfaceNormal
+            const m = new THREE.Matrix4();
+            m.makeBasis(edgeDir, flangeExtDir, flangeSurfaceNormal);
+            m.setPosition(flangeOrigin);
+
             return (
               <group matrixAutoUpdate={false} matrix={m}>
                 <FaceSketchPlane
