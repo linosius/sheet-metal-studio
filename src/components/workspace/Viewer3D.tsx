@@ -243,11 +243,13 @@ function SheetMetalMesh({
     return ids;
   }, [folds, edges, profile]);
 
-  // Extract entities from non-active face sketches
+  // Only render base face entities in 3D (fold face entities need separate transform)
   const allEntities = useMemo(() => {
-    const sketches = activeSketchFaceId
-      ? faceSketches.filter(fs => fs.faceId !== activeSketchFaceId)
-      : faceSketches;
+    const sketches = faceSketches.filter(fs => {
+      if (fs.faceId !== 'base_top' && fs.faceId !== 'base_bot') return false;
+      if (activeSketchFaceId && fs.faceId === activeSketchFaceId) return false;
+      return true;
+    });
     return sketches.flatMap(fs => fs.entities);
   }, [faceSketches, activeSketchFaceId]);
 
@@ -538,22 +540,67 @@ export function Viewer3D({
         />
 
         {/* Sketch plane when active */}
-        {sketchPlaneActive && sketchFaceOrigin && onSketchAddEntity && onSketchRemoveEntity && onSketchSelectEntity && (
-          <FaceSketchPlane
-            faceOrigin={sketchFaceOrigin}
-            faceWidth={sketchFaceWidth!}
-            faceHeight={sketchFaceHeight!}
-            thickness={thickness}
-            entities={sketchEntities || []}
-            activeTool={sketchActiveTool || 'line'}
-            gridSize={sketchGridSize || 5}
-            snapEnabled={sketchSnapEnabled ?? true}
-            onAddEntity={onSketchAddEntity}
-            onRemoveEntity={onSketchRemoveEntity}
-            selectedIds={sketchSelectedIds || []}
-            onSelectEntity={onSketchSelectEntity}
-          />
-        )}
+        {sketchPlaneActive && sketchFaceOrigin && onSketchAddEntity && onSketchRemoveEntity && onSketchSelectEntity && (() => {
+          const isFoldFace = sketchFaceId?.startsWith('fold_face_');
+          
+          if (isFoldFace) {
+            const foldId = sketchFaceId!.replace('fold_face_', '');
+            const fold = folds.find(f => f.id === foldId);
+            if (!fold) return null;
+            
+            const foldEdge = computeFoldEdge(profile, thickness, fold);
+            const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
+            const normal = foldEdge.normal.clone();
+            const dSign = fold.direction === 'up' ? 1 : -1;
+            const angleRad = fold.angle * Math.PI / 180;
+            
+            const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
+            const bentNormal = normal.clone().applyQuaternion(q);
+            const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
+            
+            const m = new THREE.Matrix4();
+            m.makeBasis(tangent, bentNormal, bentUp);
+            m.setPosition(foldEdge.start);
+            
+            return (
+              <group matrixAutoUpdate={false} matrix={m}>
+                <FaceSketchPlane
+                  faceOrigin={{ x: 0, y: 0 }}
+                  faceWidth={sketchFaceWidth!}
+                  faceHeight={sketchFaceHeight!}
+                  thickness={0}
+                  surfaceZ={0.02}
+                  worldTransform={m}
+                  entities={sketchEntities || []}
+                  activeTool={sketchActiveTool || 'line'}
+                  gridSize={sketchGridSize || 5}
+                  snapEnabled={sketchSnapEnabled ?? true}
+                  onAddEntity={onSketchAddEntity}
+                  onRemoveEntity={onSketchRemoveEntity}
+                  selectedIds={sketchSelectedIds || []}
+                  onSelectEntity={onSketchSelectEntity}
+                />
+              </group>
+            );
+          }
+          
+          return (
+            <FaceSketchPlane
+              faceOrigin={sketchFaceOrigin!}
+              faceWidth={sketchFaceWidth!}
+              faceHeight={sketchFaceHeight!}
+              thickness={thickness}
+              entities={sketchEntities || []}
+              activeTool={sketchActiveTool || 'line'}
+              gridSize={sketchGridSize || 5}
+              snapEnabled={sketchSnapEnabled ?? true}
+              onAddEntity={onSketchAddEntity}
+              onRemoveEntity={onSketchRemoveEntity}
+              selectedIds={sketchSelectedIds || []}
+              onSelectEntity={onSketchSelectEntity}
+            />
+          );
+        })()}
 
         <Grid
           args={[500, 500]}

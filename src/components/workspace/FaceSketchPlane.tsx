@@ -9,6 +9,8 @@ interface FaceSketchPlaneProps {
   faceWidth: number;
   faceHeight: number;
   thickness: number;
+  surfaceZ?: number;
+  worldTransform?: THREE.Matrix4;
   entities: FaceSketchEntity[];
   activeTool: 'select' | 'line' | 'circle' | 'rect';
   gridSize: number;
@@ -21,15 +23,21 @@ interface FaceSketchPlaneProps {
 
 export function FaceSketchPlane({
   faceOrigin, faceWidth, faceHeight, thickness,
+  surfaceZ: surfaceZProp, worldTransform,
   entities, activeTool, gridSize, snapEnabled,
   onAddEntity, onRemoveEntity, selectedIds, onSelectEntity,
 }: FaceSketchPlaneProps) {
   const [cursorPos, setCursorPos] = useState<Point2D | null>(null);
   const [drawStart, setDrawStart] = useState<Point2D | null>(null);
 
-  const z = thickness + 0.01;
+  const z = surfaceZProp ?? (thickness + 0.01);
   const ox = faceOrigin.x;
   const oy = faceOrigin.y;
+
+  const inverseTransform = useMemo(() => {
+    if (!worldTransform) return null;
+    return worldTransform.clone().invert();
+  }, [worldTransform]);
 
   // Cancel drawing on Escape
   useEffect(() => {
@@ -48,10 +56,16 @@ export function FaceSketchPlane({
     return Math.round(v / gridSize) * gridSize;
   }, [snapEnabled, gridSize]);
 
-  const toLocal = useCallback((worldPoint: THREE.Vector3): Point2D => ({
-    x: snap(worldPoint.x - ox),
-    y: snap(worldPoint.y - oy),
-  }), [ox, oy, snap]);
+  const toLocal = useCallback((worldPoint: THREE.Vector3): Point2D => {
+    let p = worldPoint.clone();
+    if (inverseTransform) {
+      p.applyMatrix4(inverseTransform);
+    }
+    return {
+      x: snap(p.x - ox),
+      y: snap(p.y - oy),
+    };
+  }, [ox, oy, snap, inverseTransform]);
 
   const clamp = useCallback((p: Point2D): Point2D => ({
     x: Math.max(0, Math.min(faceWidth, p.x)),

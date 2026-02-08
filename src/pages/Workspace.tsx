@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine } from 'lucide-react';
+import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine, Undo2, Redo2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkflowBar, WorkflowStep } from '@/components/workspace/WorkflowBar';
 import { SketchToolbar } from '@/components/workspace/SketchToolbar';
@@ -11,10 +11,12 @@ import { UnfoldViewer } from '@/components/workspace/UnfoldViewer';
 import { FaceSketchToolbar } from '@/components/workspace/FaceSketchToolbar';
 import { FoldDialog } from '@/components/workspace/FoldDialog';
 import { useSketchStore } from '@/hooks/useSketchStore';
+import { useActionHistory } from '@/hooks/useActionHistory';
 import {
   extractProfile, getAllSelectableEdges, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchEntity, classifySketchLineAsFold,
   getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine,
+  computeFoldEdge, getFoldMovingHeights,
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
@@ -27,12 +29,13 @@ export default function Workspace() {
   // 3D state
   const [profile, setProfile] = useState<Point2D[] | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [flanges, setFlanges] = useState<Flange[]>([]);
-  const [folds, setFolds] = useState<Fold[]>([]);
+
+  // Action history (replaces individual flanges/folds/faceSketches state)
+  const history = useActionHistory();
+  const { flanges, folds, faceSketches } = history.currentState;
 
   // Sub-mode & face sketch state
   const [subMode, setSubMode] = useState<'edge' | 'sketch' | 'fold'>('edge');
-  const [faceSketches, setFaceSketches] = useState<FaceSketch[]>([]);
   const [activeFaceSketch, setActiveFaceSketch] = useState<string | null>(null);
   const [selectedSketchLineId, setSelectedSketchLineId] = useState<string | null>(null);
   const [foldDialogOpen, setFoldDialogOpen] = useState(false);
@@ -55,9 +58,7 @@ export default function Workspace() {
       return;
     }
     setProfile(p);
-    setFlanges([]);
-    setFolds([]);
-    setFaceSketches([]);
+    history.pushAction('Base Face Created', 'base-face', { flanges: [], folds: [], faceSketches: [] });
     setSelectedEdgeId(null);
     setSelectedSketchLineId(null);
     setActiveFaceSketch(null);
@@ -67,7 +68,7 @@ export default function Workspace() {
     toast.success('Base face created', {
       description: `Profile with ${p.length} vertices, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
     });
-  }, [sketch.entities, sketch.sheetMetalDefaults.thickness]);
+  }, [sketch.entities, sketch.sheetMetalDefaults.thickness, history]);
 
   const handleStepClick = useCallback((step: WorkflowStep) => {
     if ((step === 'base-face' || step === 'fold-flanges' || step === 'unfold') && !profile) {
@@ -81,7 +82,9 @@ export default function Workspace() {
   const handleFaceClick = useCallback((faceId: string) => {
     if (subMode !== 'sketch' || currentStep !== 'fold-flanges') return;
     if (activeFaceSketch) return; // Already sketching
-    if (faceId === 'base_top' || faceId === 'base_bot') {
+
+    // Support base faces and fold faces
+    if (faceId === 'base_top' || faceId === 'base_bot' || faceId.startsWith('fold_face_')) {
       const existing = faceSketches.find(fs => fs.faceId === faceId);
       setSketchEntities(existing ? [...existing.entities] : []);
       setActiveFaceSketch(faceId);
@@ -106,15 +109,16 @@ export default function Workspace() {
 
   const handleFinishSketch = useCallback(() => {
     if (!activeFaceSketch) return;
-    setFaceSketches(prev => {
-      const existing = prev.filter(fs => fs.faceId !== activeFaceSketch);
-      return [...existing, { faceId: activeFaceSketch, entities: sketchEntities }];
-    });
+    const updated = [
+      ...faceSketches.filter(fs => fs.faceId !== activeFaceSketch),
+      { faceId: activeFaceSketch, entities: sketchEntities },
+    ];
+    history.pushAction(`Sketch on ${activeFaceSketch}`, 'sketch', { flanges, folds, faceSketches: updated });
     setActiveFaceSketch(null);
     setSketchEntities([]);
     setSketchSelectedIds([]);
     toast.success('Sketch saved', { description: `${sketchEntities.length} entity(s) on ${activeFaceSketch}` });
-  }, [activeFaceSketch, sketchEntities]);
+  }, [activeFaceSketch, sketchEntities, flanges, folds, faceSketches, history]);
 
   const handleExitSketch = useCallback(() => {
     setActiveFaceSketch(null);
@@ -132,6 +136,37 @@ export default function Workspace() {
       origin: { x: Math.min(...xs), y: Math.min(...ys) } as Point2D,
     };
   }, [profile]);
+
+  // Compute sketch face info (supports base faces and fold faces)
+  const sketchFaceInfo = useMemo(() => {
+    if (!activeFaceSketch || !profile) return null;
+
+    if (activeFaceSketch === 'base_top' || activeFaceSketch === 'base_bot') {
+      return {
+        origin: profileBounds?.origin ?? { x: 0, y: 0 },
+        width: profileBounds?.width ?? 0,
+        height: profileBounds?.height ?? 0,
+      };
+    }
+
+    if (activeFaceSketch.startsWith('fold_face_')) {
+      const foldId = activeFaceSketch.replace('fold_face_', '');
+      const fold = folds.find(f => f.id === foldId);
+      if (!fold) return null;
+
+      const foldEdge = computeFoldEdge(profile, sketch.sheetMetalDefaults.thickness, fold);
+      const lineLen = foldEdge.start.distanceTo(foldEdge.end);
+      const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
+
+      return {
+        origin: { x: 0, y: 0 } as Point2D,
+        width: lineLen,
+        height: Math.max(startHeight, endHeight),
+      };
+    }
+
+    return null;
+  }, [activeFaceSketch, profile, profileBounds, folds, sketch.sheetMetalDefaults.thickness]);
 
   // ── Sketch line click handler (fold sub-mode) ──
   const handleSketchLineClick = useCallback((lineId: string) => {
@@ -161,7 +196,7 @@ export default function Workspace() {
     setFoldDialogOpen(true);
   }, [subMode, folds, profileBounds, faceSketches]);
 
-  // ── Apply fold from dialog ──
+  // ── Apply fold from dialog (NO LONGER clears flanges) ──
   const handleApplyFold = useCallback((params: {
     angle: number;
     direction: 'up' | 'down';
@@ -185,13 +220,6 @@ export default function Workspace() {
       return;
     }
 
-    if (flanges.length > 0) {
-      setFlanges([]);
-      toast.info('Flanges cleared', {
-        description: 'Flanges were removed because the base profile changed.',
-      });
-    }
-
     const fold: Fold = {
       id: generateId(),
       lineStart: classification.lineStart,
@@ -204,23 +232,25 @@ export default function Workspace() {
       foldLocation: params.foldLocation,
     };
 
-    setFolds(prev => [...prev, fold]);
+    history.pushAction(
+      `Fold ${params.angle}° ${params.direction}`,
+      'fold',
+      { flanges, folds: [...folds, fold], faceSketches },
+    );
     setFoldDialogOpen(false);
     setSelectedSketchLineId(null);
     toast.success('Fold applied', {
       description: `(${classification.lineStart.x.toFixed(0)},${classification.lineStart.y.toFixed(0)})→(${classification.lineEnd.x.toFixed(0)},${classification.lineEnd.y.toFixed(0)}), ${params.angle}° ${params.direction}`,
     });
-  }, [selectedSketchLineId, profile, profileBounds, faceSketches, flanges.length]);
+  }, [selectedSketchLineId, profile, profileBounds, faceSketches, flanges, folds, history]);
 
-  // ── Remove fold ──
+  // ── Remove fold (NO LONGER clears flanges) ──
   const handleRemoveFold = useCallback((id: string) => {
-    setFolds(prev => prev.filter(f => f.id !== id));
-    if (flanges.length > 0) {
-      setFlanges([]);
-      toast.info('Flanges cleared due to fold removal');
-    }
+    history.pushAction('Fold removed', 'remove-fold', {
+      flanges, folds: folds.filter(f => f.id !== id), faceSketches,
+    });
     toast.success('Fold removed');
-  }, [flanges.length]);
+  }, [flanges, folds, faceSketches, history]);
 
   // ── Flange operations ──
   const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
@@ -268,12 +298,16 @@ export default function Workspace() {
       direction: 'up',
       bendRadius: sketch.sheetMetalDefaults.bendRadius,
     };
-    setFlanges(prev => [...prev, flange]);
+    history.pushAction(
+      `Flange ${height}mm`,
+      'flange',
+      { flanges: [...flanges, flange], folds, faceSketches },
+    );
     const displayDir = getUserFacingDirection(targetEdgeId);
     toast.success('Flange added', {
       description: `${height}mm × ${angle}° ${displayDir} on ${targetEdgeId}`,
     });
-  }, [selectedEdgeId, profile, flanges, folds, sketch.sheetMetalDefaults.thickness, sketch.sheetMetalDefaults.bendRadius]);
+  }, [selectedEdgeId, profile, flanges, folds, faceSketches, sketch.sheetMetalDefaults.thickness, sketch.sheetMetalDefaults.bendRadius, history]);
 
   const handleUpdateFlange = useCallback((id: string, updates: Partial<Flange>) => {
     if (updates.direction && profile) {
@@ -286,26 +320,50 @@ export default function Workspace() {
         const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
         if (!edges.some(e => e.id === oppositeId)) { toast.error('Opposite edge not available'); return; }
         if (flanges.some(f => f.id !== id && f.edgeId === oppositeId)) { toast.error('Opposite edge already has a flange'); return; }
-        setFlanges(prev => prev.map(f =>
-          f.id === id ? { ...f, ...updates, edgeId: oppositeId, direction: 'up' } : f
-        ));
+        history.pushAction('Flange moved', 'update-flange', {
+          flanges: flanges.map(f =>
+            f.id === id ? { ...f, ...updates, edgeId: oppositeId, direction: 'up' } : f
+          ),
+          folds, faceSketches,
+        });
         toast.info(`Flange moved to ${oppositeId}`);
         return;
       }
       return;
     }
-    setFlanges(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
-  }, [flanges, profile, folds, sketch.sheetMetalDefaults.thickness]);
+    history.pushAction('Flange updated', 'update-flange', {
+      flanges: flanges.map(f => f.id === id ? { ...f, ...updates } : f),
+      folds, faceSketches,
+    });
+  }, [flanges, folds, faceSketches, profile, sketch.sheetMetalDefaults.thickness, history]);
 
   const handleRemoveFlange = useCallback((id: string) => {
-    setFlanges(prev => prev.filter(f => f.id !== id));
+    history.pushAction('Flange removed', 'remove-flange', {
+      flanges: flanges.filter(f => f.id !== id), folds, faceSketches,
+    });
     toast.success('Flange removed');
-  }, []);
+  }, [flanges, folds, faceSketches, history]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+
+      // Undo/Redo
+      if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          history.redo();
+        } else {
+          history.undo();
+        }
+        return;
+      }
+      if (e.key === 'y' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        history.redo();
+        return;
+      }
 
       // Sketch plane shortcuts
       if (activeFaceSketch) {
@@ -334,7 +392,7 @@ export default function Workspace() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [currentStep, sketch.setActiveTool, activeFaceSketch, sketchSelectedIds]);
+  }, [currentStep, sketch.setActiveTool, activeFaceSketch, sketchSelectedIds, history]);
 
   const is3DStep = currentStep === 'base-face' || currentStep === 'fold-flanges';
   const isUnfoldStep = currentStep === 'unfold';
@@ -373,6 +431,18 @@ export default function Workspace() {
               <Box className="h-3 w-3 text-primary-foreground" />
             </div>
             <span className="font-semibold text-sm">SheetMetal Online</span>
+          </div>
+          <div className="w-px h-6 bg-border mx-1" />
+          {/* Undo / Redo */}
+          <div className="flex items-center gap-0.5">
+            <Button variant="ghost" size="icon" className="h-8 w-8"
+              disabled={!history.canUndo} onClick={history.undo} title="Undo (Ctrl+Z)">
+              <Undo2 className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-8 w-8"
+              disabled={!history.canRedo} onClick={history.redo} title="Redo (Ctrl+Shift+Z)">
+              <Redo2 className="h-4 w-4" />
+            </Button>
           </div>
           <div className="w-px h-6 bg-border mx-1" />
           <span className="text-xs text-muted-foreground font-mono">Untitled Project</span>
@@ -485,7 +555,7 @@ export default function Workspace() {
             />
           )}
 
-          {/* 3D Viewer (always shown in 3D steps, with sketch plane overlay) */}
+          {/* 3D Viewer */}
           {is3DStep && profile && (
             <Viewer3D
               profile={profile}
@@ -502,9 +572,9 @@ export default function Workspace() {
               // Sketch plane props
               sketchPlaneActive={!!activeFaceSketch}
               sketchFaceId={activeFaceSketch}
-              sketchFaceOrigin={profileBounds?.origin}
-              sketchFaceWidth={profileBounds?.width}
-              sketchFaceHeight={profileBounds?.height}
+              sketchFaceOrigin={sketchFaceInfo?.origin}
+              sketchFaceWidth={sketchFaceInfo?.width}
+              sketchFaceHeight={sketchFaceInfo?.height}
               sketchEntities={sketchEntities}
               sketchActiveTool={sketchTool}
               sketchGridSize={sketch.gridSize}
@@ -515,13 +585,13 @@ export default function Workspace() {
               onSketchSelectEntity={handleSketchSelectEntity}
             >
               {/* Sketch toolbar overlay */}
-              {activeFaceSketch && profileBounds && (
+              {activeFaceSketch && sketchFaceInfo && (
                 <FaceSketchToolbar
                   activeTool={sketchTool}
                   onToolChange={setSketchTool}
                   faceId={activeFaceSketch}
-                  faceWidth={profileBounds.width}
-                  faceHeight={profileBounds.height}
+                  faceWidth={sketchFaceInfo.width}
+                  faceHeight={sketchFaceInfo.height}
                   onFinish={handleFinishSketch}
                   onExit={handleExitSketch}
                 />
@@ -569,6 +639,9 @@ export default function Workspace() {
           subMode={currentStep === 'fold-flanges' ? subMode : undefined}
           faceSketches={faceSketches}
           selectedSketchLine={selectedSketchLine}
+          actionEntries={history.entries}
+          actionCurrentIndex={history.currentIndex}
+          onActionGoTo={history.goTo}
         />
       </div>
 
