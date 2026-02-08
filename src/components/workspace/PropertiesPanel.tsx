@@ -6,7 +6,7 @@ import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { SheetMetalDefaults, MATERIALS } from '@/lib/sheetmetal';
 import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus } from 'lucide-react';
-import { PartEdge, Flange } from '@/lib/geometry';
+import { PartEdge, Flange, getUserFacingDirection } from '@/lib/geometry';
 
 interface PropertiesPanelProps {
   defaults: SheetMetalDefaults;
@@ -232,7 +232,9 @@ export function PropertiesPanel({
               </div>
             )}
 
-            {edgeHasFlange && existingFlange && (
+            {edgeHasFlange && existingFlange && (() => {
+              const displayDirection = getUserFacingDirection(existingFlange.edgeId);
+              return (
               <div className="p-3 rounded-lg bg-accent/10 border border-accent/30 space-y-3">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -279,7 +281,7 @@ export function PropertiesPanel({
                     <Label className="text-[10px]">Direction</Label>
                     <div className="flex gap-1">
                       <Button
-                        variant={existingFlange.direction === 'up' ? 'default' : 'outline'}
+                        variant={displayDirection === 'up' ? 'default' : 'outline'}
                         size="sm"
                         className="flex-1 h-7 text-[10px] gap-1"
                         onClick={() => onUpdateFlange?.(existingFlange.id, { direction: 'up' })}
@@ -288,7 +290,7 @@ export function PropertiesPanel({
                         Up
                       </Button>
                       <Button
-                        variant={existingFlange.direction === 'down' ? 'default' : 'outline'}
+                        variant={displayDirection === 'down' ? 'default' : 'outline'}
                         size="sm"
                         className="flex-1 h-7 text-[10px] gap-1"
                         onClick={() => onUpdateFlange?.(existingFlange.id, { direction: 'down' })}
@@ -300,7 +302,8 @@ export function PropertiesPanel({
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </>
         )}
 
@@ -326,7 +329,7 @@ export function PropertiesPanel({
                   <div className="font-mono">
                     <span className="text-muted-foreground">{f.edgeId}</span>
                     <br />
-                    {f.height}mm × {f.angle}° {f.direction}
+                    {f.height}mm × {f.angle}° {getUserFacingDirection(f.edgeId)}
                   </div>
                   <Button
                     variant="ghost"

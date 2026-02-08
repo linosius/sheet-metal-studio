@@ -9,7 +9,7 @@ import { PropertiesPanel } from '@/components/workspace/PropertiesPanel';
 import { Viewer3D } from '@/components/workspace/Viewer3D';
 import { UnfoldViewer } from '@/components/workspace/UnfoldViewer';
 import { useSketchStore } from '@/hooks/useSketchStore';
-import { extractProfile, extractEdges, getAllSelectableEdges, Flange } from '@/lib/geometry';
+import { extractProfile, extractEdges, getAllSelectableEdges, Flange, getOppositeEdgeId, getUserFacingDirection } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
 
@@ -53,50 +53,97 @@ export default function Workspace() {
     setCurrentStep(step);
   }, [profile]);
 
-  // Flange operations
+  // Flange operations — uses edge remapping for "down" direction
   const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
     if (!selectedEdgeId || !profile) return;
 
-    // Check if edge already has a flange
-    if (flanges.some(f => f.edgeId === selectedEdgeId)) {
+    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges);
+
+    let targetEdgeId = selectedEdgeId;
+
+    if (direction === 'down') {
+      const oppositeId = getOppositeEdgeId(selectedEdgeId);
+      if (!oppositeId) {
+        // Side edges have no opposite — fall back to 'up'
+        toast.info('No opposite face for this edge', {
+          description: 'Side edges cannot bend downward. Using "Up" direction.',
+        });
+      } else {
+        const oppositeExists = edges.some(e => e.id === oppositeId);
+        if (!oppositeExists) {
+          toast.error('Opposite edge not found', {
+            description: `Expected ${oppositeId} but it doesn't exist yet.`,
+          });
+          return;
+        }
+        if (flanges.some(f => f.edgeId === oppositeId)) {
+          toast.error('Opposite edge already has a flange', {
+            description: `Cannot place downward flange — ${oppositeId} is already used.`,
+          });
+          return;
+        }
+        targetEdgeId = oppositeId;
+        toast.info('Flange placed on opposite face', {
+          description: `Remapped to ${oppositeId} to achieve downward bend.`,
+        });
+      }
+    }
+
+    // Final check: target edge must not already have a flange
+    if (flanges.some(f => f.edgeId === targetEdgeId)) {
       toast.error('Edge already has a flange');
       return;
     }
 
-    // Find the selected edge to determine correct direction
-    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges);
-    const edge = edges.find(e => e.id === selectedEdgeId);
-    if (!edge) return;
-
-    // The geometry engine only supports "up" (bending away from the face).
-    // "Down" places the bend arc center inside the material, producing invalid geometry.
-    // To bend "the other way", the user should select the edge on the opposite face
-    // (e.g., inner tip edge instead of outer tip edge).
-    let correctedDirection: 'up' | 'down' = 'up';
-    if (direction === 'down') {
-      toast.info('Direction adjusted to "Up"', {
-        description: 'To bend the other way, select the edge on the opposite face (e.g., inner tip instead of outer tip).',
-      });
-    }
-
     const flange: Flange = {
       id: generateId(),
-      edgeId: selectedEdgeId,
+      edgeId: targetEdgeId,
       height,
       angle,
-      direction: correctedDirection,
+      direction: 'up', // Always stored as 'up' internally
       bendRadius: sketch.sheetMetalDefaults.bendRadius,
     };
 
     setFlanges(prev => [...prev, flange]);
+    const displayDir = getUserFacingDirection(targetEdgeId);
     toast.success('Flange added', {
-      description: `${height}mm × ${angle}° ${correctedDirection} on ${selectedEdgeId}`,
+      description: `${height}mm × ${angle}° ${displayDir} on ${targetEdgeId}`,
     });
   }, [selectedEdgeId, profile, flanges, sketch.sheetMetalDefaults.thickness, sketch.sheetMetalDefaults.bendRadius]);
 
   const handleUpdateFlange = useCallback((id: string, updates: Partial<Flange>) => {
+    if (updates.direction && profile) {
+      // Direction change = edge remapping: move flange to opposite edge
+      const flange = flanges.find(f => f.id === id);
+      if (!flange) return;
+      const currentDisplayDir = getUserFacingDirection(flange.edgeId);
+      if (updates.direction !== currentDisplayDir) {
+        const oppositeId = getOppositeEdgeId(flange.edgeId);
+        if (!oppositeId) {
+          toast.info('No opposite face for this edge');
+          return;
+        }
+        const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges);
+        if (!edges.some(e => e.id === oppositeId)) {
+          toast.error('Opposite edge not available');
+          return;
+        }
+        if (flanges.some(f => f.id !== id && f.edgeId === oppositeId)) {
+          toast.error('Opposite edge already has a flange');
+          return;
+        }
+        // Move flange to opposite edge, keep direction as 'up'
+        setFlanges(prev => prev.map(f =>
+          f.id === id ? { ...f, ...updates, edgeId: oppositeId, direction: 'up' } : f
+        ));
+        toast.info(`Flange moved to ${oppositeId}`);
+        return;
+      }
+      // Same direction — no-op
+      return;
+    }
     setFlanges(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
-  }, []);
+  }, [flanges, profile, sketch.sheetMetalDefaults.thickness]);
 
   const handleRemoveFlange = useCallback((id: string) => {
     setFlanges(prev => prev.filter(f => f.id !== id));
