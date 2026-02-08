@@ -149,7 +149,7 @@ export function SketchCanvas({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [selectedIds, onRemoveEntities]);
 
   // Generate grid lines
   const gridLines = [];
