@@ -13,6 +13,7 @@ interface SketchCanvasProps {
   onAddRect: (origin: Point2D, width: number, height: number) => void;
   onSelectEntity: (id: string, multi?: boolean) => void;
   onDeselectAll: () => void;
+  onRemoveEntities: (ids: string[]) => void;
 }
 
 const CANVAS_SIZE = 2000; // virtual canvas mm
@@ -29,6 +30,7 @@ export function SketchCanvas({
   onAddRect,
   onSelectEntity,
   onDeselectAll,
+  onRemoveEntities,
 }: SketchCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const [viewBox, setViewBox] = useState({ x: -200, y: -200, w: 400, h: 400 });
@@ -139,6 +141,10 @@ export function SketchCanvas({
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setDrawStart(null);
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
+        e.preventDefault();
+        onRemoveEntities(selectedIds);
       }
     };
     window.addEventListener('keydown', handler);

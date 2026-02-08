@@ -56,6 +56,11 @@ export function useSketchStore() {
     setSelectedIds(prev => prev.filter(sid => sid !== id));
   }, []);
 
+  const removeEntities = useCallback((ids: string[]) => {
+    setEntities(prev => prev.filter(e => !ids.includes(e.id)));
+    setSelectedIds([]);
+  }, []);
+
   const clearAll = useCallback(() => {
     setEntities([]);
     setSelectedIds([]);
@@ -83,6 +88,7 @@ export function useSketchStore() {
     addLine,
     addRect,
     removeEntity,
+    removeEntities,
     clearAll,
     selectEntity,
     deselectAll,
