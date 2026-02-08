@@ -138,6 +138,7 @@ export default function Workspace() {
             onAddRect={sketch.addRect}
             onSelectEntity={sketch.selectEntity}
             onDeselectAll={sketch.deselectAll}
+            onRemoveEntities={sketch.removeEntities}
           />
         )}
 
