@@ -9,7 +9,7 @@ import {
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
-  computeFoldEdge, getFixedProfile, getFoldMovingHeight, getFoldMovingHeights,
+  computeFoldEdge, getFixedProfile, getFoldMovingHeights,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -62,28 +62,35 @@ function FoldMesh({
   onFaceClick?: (faceId: string) => void;
 }) {
   const foldEdge = useMemo(() => computeFoldEdge(profile, thickness, fold), [profile, thickness, fold]);
-  const movingHeight = useMemo(() => getFoldMovingHeight(profile, fold), [profile, fold]);
-
-  const virtualFlange: Flange = useMemo(() => ({
-    id: `fold_${fold.id}`,
-    edgeId: foldEdge.id,
-    height: movingHeight,
-    angle: fold.angle,
-    direction: 'up',
-    bendRadius: fold.bendRadius,
-  }), [fold, foldEdge, movingHeight]);
+  const { startHeight, endHeight } = useMemo(() => getFoldMovingHeights(profile, fold), [profile, fold]);
 
   const geometry = useMemo(
-    () => createFlangeMesh(foldEdge, virtualFlange, thickness),
-    [foldEdge, virtualFlange, thickness],
+    () => createFoldMesh(
+      foldEdge,
+      fold.angle,
+      fold.direction ?? 'up',
+      fold.bendRadius,
+      thickness,
+      startHeight,
+      endHeight,
+    ),
+    [foldEdge, fold.angle, fold.direction, fold.bendRadius, thickness, startHeight, endHeight],
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
   const bendLines = useMemo(() => {
+    const virtualFlange: Flange = {
+      id: `fold_${fold.id}`,
+      edgeId: foldEdge.id,
+      height: Math.max(startHeight, endHeight),
+      angle: fold.angle,
+      direction: 'up',
+      bendRadius: fold.bendRadius,
+    };
     const { bendStart, bendEnd } = computeBendLinePositions(foldEdge, virtualFlange, thickness);
     const toTuples = (pts: THREE.Vector3[]) =>
       pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
     return { start: toTuples(bendStart), end: toTuples(bendEnd) };
-  }, [foldEdge, virtualFlange, thickness]);
+  }, [foldEdge, fold, thickness, startHeight, endHeight]);
 
   const foldFaceId = `fold_face_${fold.id}`;
 
