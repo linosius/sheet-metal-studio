@@ -188,15 +188,15 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
  * end in the tangent direction.
  */
 /**
- * Compute the 3D positions for the two bend lines on the outer surface.
- * Returns { bendStart: [Vector3, Vector3], bendEnd: [Vector3, Vector3] }
- * where each pair is [edgeStartSide, edgeEndSide].
+ * Compute the 3D positions for both bend lines as closed loops around the cross-section.
+ * Each bend line has 4 corners: innerStart, innerEnd, outerEnd, outerStart (forming a rectangle).
+ * Returns arrays of Vector3 points for each closed loop.
  */
 export function computeBendLinePositions(
   edge: PartEdge,
   flange: Flange,
-  _thickness: number
-): { bendStart: [THREE.Vector3, THREE.Vector3]; bendEnd: [THREE.Vector3, THREE.Vector3] } {
+  thickness: number
+): { bendStart: THREE.Vector3[]; bendEnd: THREE.Vector3[] } {
   const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
   const R = flange.bendRadius;
@@ -206,42 +206,41 @@ export function computeBendLinePositions(
 
   const W_EPSILON = 0.02;
 
-  // Both bend lines sit on the INNER (visible/top) surface of the sheet.
-  // In the (u,w) coordinate system used by createFlangeMesh:
-  //   inner surface traces radius R around center (0, R).
+  function makePoint(base: THREE.Vector3, u: number, w: number): THREE.Vector3 {
+    return base.clone()
+      .add(uDir.clone().multiplyScalar(u))
+      .add(wDir.clone().multiplyScalar(w));
+  }
 
-  // Bend Start Line (inner surface at t=0):
-  // The point where the flat base face ends and the curve begins.
-  // iu = R*sin(0) = 0,  iw = R*(1-cos(0)) = 0
-  const startU = 0;
-  const startW = W_EPSILON;
+  // Bend Start Line (t=0): closed loop around cross-section
+  const s_iu = 0, s_iw = W_EPSILON;
+  const s_ou = 0, s_ow = -thickness + W_EPSILON;
 
-  const bendStartA = edge.start.clone()
-    .add(uDir.clone().multiplyScalar(startU))
-    .add(wDir.clone().multiplyScalar(startW));
-  const bendStartB = edge.end.clone()
-    .add(uDir.clone().multiplyScalar(startU))
-    .add(wDir.clone().multiplyScalar(startW));
+  const bendStart = [
+    makePoint(edge.start, s_iu, s_iw),  // inner start
+    makePoint(edge.end,   s_iu, s_iw),  // inner end
+    makePoint(edge.end,   s_ou, s_ow),  // outer end
+    makePoint(edge.start, s_ou, s_ow),  // outer start
+    makePoint(edge.start, s_iu, s_iw),  // close the loop
+  ];
 
-  // Bend End Line (inner surface at t=bendAngle):
-  // The point where the curve ends and the flat flange begins.
-  // iu = R*sin(A),  iw = R*(1-cos(A))
+  // Bend End Line (t=bendAngle): closed loop around cross-section
   const sinA = Math.sin(bendAngleRad);
   const cosA = Math.cos(bendAngleRad);
-  const endU = R * sinA;
-  const endW = R * (1 - cosA) + W_EPSILON;
+  const e_iu = R * sinA;
+  const e_iw = R * (1 - cosA) + W_EPSILON;
+  const e_ou = R * sinA + thickness * sinA;
+  const e_ow = R * (1 - cosA) - thickness * cosA + W_EPSILON;
 
-  const bendEndA = edge.start.clone()
-    .add(uDir.clone().multiplyScalar(endU))
-    .add(wDir.clone().multiplyScalar(endW));
-  const bendEndB = edge.end.clone()
-    .add(uDir.clone().multiplyScalar(endU))
-    .add(wDir.clone().multiplyScalar(endW));
+  const bendEnd = [
+    makePoint(edge.start, e_iu, e_iw),  // inner start
+    makePoint(edge.end,   e_iu, e_iw),  // inner end
+    makePoint(edge.end,   e_ou, e_ow),  // outer end
+    makePoint(edge.start, e_ou, e_ow),  // outer start
+    makePoint(edge.start, e_iu, e_iw),  // close the loop
+  ];
 
-  return {
-    bendStart: [bendStartA, bendStartB],
-    bendEnd: [bendEndA, bendEndB],
-  };
+  return { bendStart, bendEnd };
 }
 
 export function createFlangeMesh(
