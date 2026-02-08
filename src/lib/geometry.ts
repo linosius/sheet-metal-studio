@@ -522,20 +522,38 @@ export function createFlangeMesh(
   return geometry;
 }
 
-// ========== Fold Model ==========
+// ========== Fold & Face Sketch Model ==========
 
 export interface Fold {
   id: string;
-  /** Distance from the min edge along the fold axis */
   offset: number;
-  /** Fold line is parallel to this axis */
   axis: 'x' | 'y';
-  /** Fold angle in degrees */
   angle: number;
-  /** Bend direction relative to face */
   direction: 'up' | 'down';
-  /** Inner bend radius */
   bendRadius: number;
+  sketchLineId?: string;
+  faceId?: string;
+  foldLocation?: 'centerline' | 'material-inside' | 'material-outside';
+}
+
+export interface FaceSketchLine {
+  id: string;
+  start: Point2D;
+  end: Point2D;
+  dimension: number;
+  axis: 'x' | 'y';
+}
+
+export interface FaceSketch {
+  faceId: string;
+  lines: FaceSketchLine[];
+}
+
+export interface StressRelief {
+  position: Point2D;
+  width: number;
+  depth: number;
+  foldId: string;
 }
 
 /**
@@ -649,4 +667,52 @@ export function getOppositeEdgeId(edgeId: string): string | null {
 export function getUserFacingDirection(edgeId: string): 'up' | 'down' {
   if (edgeId.startsWith('edge_bot_') || edgeId.includes('_tip_inner_')) return 'down';
   return 'up';
+}
+
+/**
+ * Compute stress relief cuts at fold-flange intersections.
+ * Relief cuts prevent material tearing where a fold line meets a flanged edge.
+ */
+export function computeStressReliefs(
+  profile: Point2D[],
+  thickness: number,
+  folds: Fold[],
+  flanges: Flange[],
+): StressRelief[] {
+  const reliefs: StressRelief[] = [];
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+
+  const flangedEdgeIndices = new Set<number>();
+  for (const f of flanges) {
+    const match = f.edgeId.match(/edge_(?:top|bot)_(\d+)/);
+    if (match) flangedEdgeIndices.add(parseInt(match[1]));
+  }
+
+  for (const fold of folds) {
+    const rw = thickness;
+    const rd = fold.bendRadius + thickness;
+
+    if (fold.axis === 'x') {
+      const y = minY + fold.offset;
+      if (flangedEdgeIndices.has(3)) {
+        reliefs.push({ position: { x: minX, y }, width: rw, depth: rd, foldId: fold.id });
+      }
+      if (flangedEdgeIndices.has(1)) {
+        reliefs.push({ position: { x: maxX, y }, width: rw, depth: rd, foldId: fold.id });
+      }
+    } else {
+      const x = minX + fold.offset;
+      if (flangedEdgeIndices.has(0)) {
+        reliefs.push({ position: { x, y: minY }, width: rw, depth: rd, foldId: fold.id });
+      }
+      if (flangedEdgeIndices.has(2)) {
+        reliefs.push({ position: { x, y: maxY }, width: rw, depth: rd, foldId: fold.id });
+      }
+    }
+  }
+
+  return reliefs;
 }

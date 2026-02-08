@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors } from 'lucide-react';
+import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { WorkflowBar, WorkflowStep } from '@/components/workspace/WorkflowBar';
 import { SketchToolbar } from '@/components/workspace/SketchToolbar';
@@ -8,9 +8,13 @@ import { SketchCanvas } from '@/components/workspace/SketchCanvas';
 import { PropertiesPanel } from '@/components/workspace/PropertiesPanel';
 import { Viewer3D } from '@/components/workspace/Viewer3D';
 import { UnfoldViewer } from '@/components/workspace/UnfoldViewer';
-import { FoldLineEditor } from '@/components/workspace/FoldLineEditor';
+import { FaceSketchEditor } from '@/components/workspace/FaceSketchEditor';
+import { FoldDialog } from '@/components/workspace/FoldDialog';
 import { useSketchStore } from '@/hooks/useSketchStore';
-import { extractProfile, getAllSelectableEdges, Flange, Fold, getOppositeEdgeId, getUserFacingDirection } from '@/lib/geometry';
+import {
+  extractProfile, getAllSelectableEdges, Flange, Fold, FaceSketch, FaceSketchLine,
+  getOppositeEdgeId, getUserFacingDirection,
+} from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
 
@@ -24,8 +28,13 @@ export default function Workspace() {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [flanges, setFlanges] = useState<Flange[]>([]);
   const [folds, setFolds] = useState<Fold[]>([]);
-  const [subMode, setSubMode] = useState<'edge' | 'fold'>('edge');
-  const [showFoldEditor, setShowFoldEditor] = useState(false);
+
+  // New workflow state
+  const [subMode, setSubMode] = useState<'edge' | 'sketch' | 'fold'>('edge');
+  const [faceSketches, setFaceSketches] = useState<FaceSketch[]>([]);
+  const [activeFaceSketch, setActiveFaceSketch] = useState<string | null>(null);
+  const [selectedSketchLineId, setSelectedSketchLineId] = useState<string | null>(null);
+  const [foldDialogOpen, setFoldDialogOpen] = useState(false);
 
   const canConvert = useMemo(() => {
     return extractProfile(sketch.entities) !== null;
@@ -42,7 +51,10 @@ export default function Workspace() {
     setProfile(p);
     setFlanges([]);
     setFolds([]);
+    setFaceSketches([]);
     setSelectedEdgeId(null);
+    setSelectedSketchLineId(null);
+    setActiveFaceSketch(null);
     setCurrentStep('base-face');
     toast.success('Base face created', {
       description: `Profile with ${p.length} vertices, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
@@ -57,35 +69,82 @@ export default function Workspace() {
     setCurrentStep(step);
   }, [profile]);
 
-  // ── Face click handler (fold mode) ──
+  // ── Face click handler (sketch sub-mode: open 2D sketch editor) ──
   const handleFaceClick = useCallback((faceId: string) => {
-    if (subMode !== 'fold' || currentStep !== 'fold-flanges') return;
+    if (subMode !== 'sketch' || currentStep !== 'fold-flanges') return;
     if (faceId === 'base_top' || faceId === 'base_bot') {
-      setShowFoldEditor(true);
+      setActiveFaceSketch(faceId);
     }
   }, [subMode, currentStep]);
 
-  // ── Fold handlers ──
-  const handleAddFold = useCallback((data: {
-    offset: number; axis: 'x' | 'y'; angle: number;
-    direction: 'up' | 'down'; bendRadius: number;
+  // ── Face sketch handlers ──
+  const handleSketchFinish = useCallback((lines: FaceSketchLine[]) => {
+    if (!activeFaceSketch) return;
+    setFaceSketches(prev => {
+      const existing = prev.filter(fs => fs.faceId !== activeFaceSketch);
+      return [...existing, { faceId: activeFaceSketch, lines }];
+    });
+    setActiveFaceSketch(null);
+    toast.success('Sketch saved', { description: `${lines.length} line(s) on ${activeFaceSketch}` });
+  }, [activeFaceSketch]);
+
+  const handleSketchExit = useCallback(() => {
+    setActiveFaceSketch(null);
+  }, []);
+
+  // ── Sketch line click handler (fold sub-mode) ──
+  const handleSketchLineClick = useCallback((lineId: string) => {
+    if (subMode !== 'fold') return;
+    if (folds.some(f => f.sketchLineId === lineId)) {
+      toast.error('This line already has a fold applied');
+      return;
+    }
+    setSelectedSketchLineId(lineId);
+    setFoldDialogOpen(true);
+  }, [subMode, folds]);
+
+  // ── Apply fold from dialog ──
+  const handleApplyFold = useCallback((params: {
+    angle: number;
+    direction: 'up' | 'down';
+    bendRadius: number;
+    foldLocation: 'centerline' | 'material-inside' | 'material-outside';
   }) => {
-    if (!profile) return;
-    // Clear flanges — profile geometry changes
+    if (!selectedSketchLineId || !profile) return;
+
+    const sketchLine = faceSketches
+      .flatMap(fs => fs.lines)
+      .find(l => l.id === selectedSketchLineId);
+    if (!sketchLine) return;
+
     if (flanges.length > 0) {
       setFlanges([]);
       toast.info('Flanges cleared', {
         description: 'Flanges were removed because the base profile changed.',
       });
     }
-    const fold: Fold = { id: generateId(), ...data };
-    setFolds(prev => [...prev, fold]);
-    setShowFoldEditor(false);
-    toast.success('Fold added', {
-      description: `${data.axis.toUpperCase()}-axis @ ${data.offset}mm, ${data.angle}° ${data.direction}`,
-    });
-  }, [profile, flanges.length]);
 
+    const fold: Fold = {
+      id: generateId(),
+      offset: sketchLine.dimension,
+      axis: sketchLine.axis,
+      angle: params.angle,
+      direction: params.direction,
+      bendRadius: params.bendRadius,
+      sketchLineId: selectedSketchLineId,
+      faceId: 'base_top',
+      foldLocation: params.foldLocation,
+    };
+
+    setFolds(prev => [...prev, fold]);
+    setFoldDialogOpen(false);
+    setSelectedSketchLineId(null);
+    toast.success('Fold applied', {
+      description: `${sketchLine.axis.toUpperCase()}-axis @ ${sketchLine.dimension}mm, ${params.angle}° ${params.direction}`,
+    });
+  }, [selectedSketchLineId, profile, faceSketches, flanges.length]);
+
+  // ── Remove fold ──
   const handleRemoveFold = useCallback((id: string) => {
     setFolds(prev => prev.filter(f => f.id !== id));
     if (flanges.length > 0) {
@@ -95,7 +154,7 @@ export default function Workspace() {
     toast.success('Fold removed');
   }, [flanges.length]);
 
-  // ── Flange operations — edge remapping for "down" direction ──
+  // ── Flange operations (edge remapping for "down" direction) ──
   const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
     if (!selectedEdgeId || !profile) return;
 
@@ -121,21 +180,15 @@ export default function Workspace() {
       } else {
         const oppositeExists = edges.some(e => e.id === oppositeId);
         if (!oppositeExists) {
-          toast.error('Opposite edge not found', {
-            description: `Expected ${oppositeId} but it doesn't exist yet.`,
-          });
+          toast.error('Opposite edge not found');
           return;
         }
         if (flanges.some(f => f.edgeId === oppositeId)) {
-          toast.error('Opposite edge already has a flange', {
-            description: `Cannot place downward flange — ${oppositeId} is already used.`,
-          });
+          toast.error('Opposite edge already has a flange');
           return;
         }
         targetEdgeId = oppositeId;
-        toast.info('Flange placed on opposite face', {
-          description: `Remapped to ${oppositeId} to achieve downward bend.`,
-        });
+        toast.info('Flange placed on opposite face');
       }
     }
 
@@ -204,7 +257,6 @@ export default function Workspace() {
   const is3DStep = currentStep === 'base-face' || currentStep === 'fold-flanges';
   const isUnfoldStep = currentStep === 'unfold';
 
-  // Profile bounds for fold editor
   const profileBounds = useMemo(() => {
     if (!profile) return null;
     const xs = profile.map(p => p.x);
@@ -221,6 +273,17 @@ export default function Workspace() {
     const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
     return edges.find(e => e.id === selectedEdgeId) || null;
   }, [is3DStep, profile, selectedEdgeId, sketch.sheetMetalDefaults.thickness, flanges, folds]);
+
+  const selectedSketchLine = useMemo(() => {
+    if (!selectedSketchLineId) return null;
+    return faceSketches.flatMap(fs => fs.lines).find(l => l.id === selectedSketchLineId) || null;
+  }, [selectedSketchLineId, faceSketches]);
+
+  // Viewer interaction mode
+  const viewerMode = useMemo((): 'edge' | 'sketch' | 'fold' | 'view' => {
+    if (currentStep === 'fold-flanges') return subMode;
+    return 'view';
+  }, [currentStep, subMode]);
 
   return (
     <div className="h-screen flex flex-col bg-background">
@@ -295,30 +358,38 @@ export default function Workspace() {
         {/* Content column */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Sub-mode toolbar for Fold & Flanges step */}
-          {currentStep === 'fold-flanges' && (
+          {currentStep === 'fold-flanges' && !activeFaceSketch && (
             <div className="flex items-center gap-2 px-3 py-1.5 border-b bg-muted/30 shrink-0">
               <span className="text-xs font-medium text-muted-foreground">Mode:</span>
               <Button
                 variant={subMode === 'edge' ? 'default' : 'outline'}
                 size="sm" className="h-7 text-xs gap-1"
-                onClick={() => setSubMode('edge')}
+                onClick={() => { setSubMode('edge'); setSelectedSketchLineId(null); }}
               >
                 <MousePointer2 className="h-3 w-3" />
                 Edge
               </Button>
               <Button
+                variant={subMode === 'sketch' ? 'default' : 'outline'}
+                size="sm" className="h-7 text-xs gap-1"
+                onClick={() => { setSubMode('sketch'); setSelectedEdgeId(null); setSelectedSketchLineId(null); }}
+              >
+                <PenLine className="h-3 w-3" />
+                2D Sketch
+              </Button>
+              <Button
                 variant={subMode === 'fold' ? 'default' : 'outline'}
                 size="sm" className="h-7 text-xs gap-1"
-                onClick={() => setSubMode('fold')}
+                onClick={() => { setSubMode('fold'); setSelectedEdgeId(null); }}
               >
                 <Scissors className="h-3 w-3" />
                 Fold
               </Button>
               <div className="w-px h-4 bg-border mx-1" />
               <span className="text-xs text-muted-foreground">
-                {subMode === 'edge'
-                  ? 'Select an edge to add a flange'
-                  : 'Click a face to place a fold line'}
+                {subMode === 'edge' && 'Select an edge to add a flange'}
+                {subMode === 'sketch' && 'Click a face to open the sketch editor'}
+                {subMode === 'fold' && 'Select a sketch line to apply fold'}
               </span>
             </div>
           )}
@@ -339,8 +410,8 @@ export default function Workspace() {
             />
           )}
 
-          {/* 3D Viewer */}
-          {is3DStep && profile && (
+          {/* 3D Viewer (hidden when face sketch editor is open) */}
+          {is3DStep && profile && !activeFaceSketch && (
             <Viewer3D
               profile={profile}
               thickness={sketch.sheetMetalDefaults.thickness}
@@ -348,8 +419,23 @@ export default function Workspace() {
               onEdgeClick={setSelectedEdgeId}
               flanges={flanges}
               folds={folds}
-              foldMode={subMode === 'fold' && currentStep === 'fold-flanges'}
+              interactionMode={viewerMode}
               onFaceClick={handleFaceClick}
+              faceSketches={faceSketches}
+              selectedSketchLineId={selectedSketchLineId}
+              onSketchLineClick={handleSketchLineClick}
+            />
+          )}
+
+          {/* Face Sketch Editor (replaces 3D viewer when active) */}
+          {activeFaceSketch && profileBounds && (
+            <FaceSketchEditor
+              faceId={activeFaceSketch}
+              faceWidth={profileBounds.width}
+              faceHeight={profileBounds.height}
+              existingLines={faceSketches.find(fs => fs.faceId === activeFaceSketch)?.lines || []}
+              onFinish={handleSketchFinish}
+              onExit={handleSketchExit}
             />
           )}
 
@@ -390,19 +476,20 @@ export default function Workspace() {
           onRemoveFlange={handleRemoveFlange}
           folds={folds}
           onRemoveFold={handleRemoveFold}
+          subMode={currentStep === 'fold-flanges' ? subMode : undefined}
+          faceSketches={faceSketches}
+          selectedSketchLine={selectedSketchLine}
         />
       </div>
 
-      {/* Fold Line Editor Dialog */}
-      {showFoldEditor && profileBounds && (
-        <FoldLineEditor
-          open={showFoldEditor}
-          faceWidth={profileBounds.width}
-          faceHeight={profileBounds.height}
-          faceOrigin={profileBounds.origin}
+      {/* Fold Dialog */}
+      {foldDialogOpen && selectedSketchLine && (
+        <FoldDialog
+          open={foldDialogOpen}
+          sketchLine={selectedSketchLine}
           defaultBendRadius={sketch.sheetMetalDefaults.bendRadius}
-          onApply={handleAddFold}
-          onClose={() => setShowFoldEditor(false)}
+          onApply={handleApplyFold}
+          onClose={() => { setFoldDialogOpen(false); setSelectedSketchLineId(null); }}
         />
       )}
     </div>

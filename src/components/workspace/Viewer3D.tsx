@@ -6,7 +6,7 @@ import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
   createBaseFaceMesh, createFlangeMesh, computeBendLinePositions,
-  getAllSelectableEdges, PartEdge, Flange, Fold,
+  getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   computeFoldEdge, getFixedProfile, getFoldMovingHeight,
 } from '@/lib/geometry';
 
@@ -17,8 +17,11 @@ interface SheetMetalMeshProps {
   onEdgeClick: (edgeId: string) => void;
   flanges: Flange[];
   folds: Fold[];
-  foldMode: boolean;
+  interactionMode: 'edge' | 'sketch' | 'fold' | 'view';
   onFaceClick?: (faceId: string) => void;
+  faceSketches: FaceSketch[];
+  selectedSketchLineId: string | null;
+  onSketchLineClick?: (lineId: string) => void;
 }
 
 function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flange; thickness: number }) {
@@ -54,7 +57,7 @@ function FoldMesh({ profile, fold, thickness }: { profile: Point2D[]; fold: Fold
     edgeId: foldEdge.id,
     height: movingHeight,
     angle: fold.angle,
-    direction: 'up', // faceNormal already handles directionality
+    direction: 'up',
     bendRadius: fold.bendRadius,
   }), [fold, foldEdge, movingHeight]);
 
@@ -84,11 +87,81 @@ function FoldMesh({ profile, fold, thickness }: { profile: Point2D[]; fold: Fold
   );
 }
 
+function SketchLine3D({
+  line, profile, thickness, isSelected, hasFold, isFoldMode, onSketchLineClick,
+}: {
+  line: { id: string; axis: 'x' | 'y'; dimension: number };
+  profile: Point2D[];
+  thickness: number;
+  isSelected: boolean;
+  hasFold: boolean;
+  isFoldMode: boolean;
+  onSketchLineClick?: (id: string) => void;
+}) {
+  const positions = useMemo(() => {
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const z = thickness + 0.05;
+
+    if (line.axis === 'x') {
+      const y = minY + line.dimension;
+      return {
+        start: [minX, y, z] as [number, number, number],
+        end: [maxX, y, z] as [number, number, number],
+      };
+    } else {
+      const x = minX + line.dimension;
+      return {
+        start: [x, minY, z] as [number, number, number],
+        end: [x, maxY, z] as [number, number, number],
+      };
+    }
+  }, [line, profile, thickness]);
+
+  const { midpoint, quaternion, length } = useMemo(() => {
+    const s = new THREE.Vector3(...positions.start);
+    const e = new THREE.Vector3(...positions.end);
+    const mid = s.clone().add(e).multiplyScalar(0.5);
+    const dir = new THREE.Vector3().subVectors(e, s).normalize();
+    const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+    return { midpoint: mid, quaternion: quat, length: s.distanceTo(e) };
+  }, [positions]);
+
+  const color = hasFold ? '#22c55e' : isSelected ? '#a855f7' : '#ef4444';
+
+  return (
+    <group>
+      <Line
+        points={[positions.start, positions.end]}
+        color={color}
+        lineWidth={isSelected ? 3 : 2}
+        dashed
+        dashSize={2}
+        gapSize={1}
+      />
+      {isFoldMode && !hasFold && (
+        <mesh
+          position={midpoint}
+          quaternion={quaternion}
+          onClick={(e) => { e.stopPropagation(); onSketchLineClick?.(line.id); }}
+          onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
+          onPointerOut={() => { document.body.style.cursor = 'default'; }}
+        >
+          <boxGeometry args={[length, 3, 3]} />
+          <meshBasicMaterial transparent opacity={0} />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
 function SheetMetalMesh({
   profile, thickness, selectedEdgeId, onEdgeClick,
-  flanges, folds, foldMode, onFaceClick,
+  flanges, folds, interactionMode, onFaceClick,
+  faceSketches, selectedSketchLineId, onSketchLineClick,
 }: SheetMetalMeshProps) {
-  // Use fixed (trimmed) profile for the base face when folds exist
   const fixedProfile = useMemo(() => getFixedProfile(profile, folds), [profile, folds]);
   const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness), [fixedProfile, thickness]);
   const edges = useMemo(
@@ -105,7 +178,6 @@ function SheetMetalMesh({
 
   const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
 
-  // Edges that are fold lines (should not be selectable for flanges)
   const foldLineEdgeIds = useMemo(() => {
     const ids = new Set<string>();
     folds.forEach(fold => {
@@ -116,24 +188,33 @@ function SheetMetalMesh({
     return ids;
   }, [folds]);
 
+  const allSketchLines = useMemo(() =>
+    faceSketches.flatMap(fs => fs.lines),
+    [faceSketches],
+  );
+
+  const foldedLineIds = useMemo(() =>
+    new Set(folds.filter(f => f.sketchLineId).map(f => f.sketchLineId!)),
+    [folds],
+  );
+
+  const isSketchMode = interactionMode === 'sketch';
+  const isFoldMode = interactionMode === 'fold';
+  const isEdgeMode = interactionMode === 'edge';
+
   return (
     <group>
       {/* Solid base face */}
       <mesh
         geometry={geometry}
         onClick={(e) => {
-          if (foldMode && onFaceClick) {
+          if (isSketchMode && onFaceClick) {
             e.stopPropagation();
-            const point = e.point;
-            if (point.z > thickness * 0.5) {
-              onFaceClick('base_top');
-            } else {
-              onFaceClick('base_bot');
-            }
+            onFaceClick(e.point.z > thickness * 0.5 ? 'base_top' : 'base_bot');
           }
         }}
-        onPointerOver={() => { if (foldMode) document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { if (foldMode) document.body.style.cursor = 'default'; }}
+        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
@@ -143,7 +224,7 @@ function SheetMetalMesh({
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
 
-      {/* Selectable edges */}
+      {/* Selectable edges (edge mode only) */}
       {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
@@ -176,7 +257,7 @@ function SheetMetalMesh({
               lineWidth={isSelected ? 3 : isFoldLine ? 2.5 : 2}
             />
 
-            {!foldMode && (
+            {isEdgeMode && (
               <mesh
                 position={edgeMid}
                 quaternion={edgeQuat}
@@ -201,6 +282,20 @@ function SheetMetalMesh({
           </group>
         );
       })}
+
+      {/* Render sketch lines on 3D faces (fold & sketch modes) */}
+      {(isFoldMode || isSketchMode) && allSketchLines.map(line => (
+        <SketchLine3D
+          key={line.id}
+          line={line}
+          profile={profile}
+          thickness={thickness}
+          isSelected={selectedSketchLineId === line.id}
+          hasFold={foldedLineIds.has(line.id)}
+          isFoldMode={isFoldMode}
+          onSketchLineClick={onSketchLineClick}
+        />
+      ))}
 
       {/* Render flanges */}
       {flanges.map((flange) => {
@@ -251,13 +346,17 @@ interface Viewer3DProps {
   onEdgeClick: (edgeId: string) => void;
   flanges: Flange[];
   folds?: Fold[];
-  foldMode?: boolean;
+  interactionMode?: 'edge' | 'sketch' | 'fold' | 'view';
   onFaceClick?: (faceId: string) => void;
+  faceSketches?: FaceSketch[];
+  selectedSketchLineId?: string | null;
+  onSketchLineClick?: (lineId: string) => void;
 }
 
 export function Viewer3D({
   profile, thickness, selectedEdgeId, onEdgeClick,
-  flanges, folds = [], foldMode = false, onFaceClick,
+  flanges, folds = [], interactionMode = 'view', onFaceClick,
+  faceSketches = [], selectedSketchLineId = null, onSketchLineClick,
 }: Viewer3DProps) {
   const cameraApi = useRef({ reset: () => {} });
 
@@ -293,8 +392,11 @@ export function Viewer3D({
           onEdgeClick={onEdgeClick}
           flanges={flanges}
           folds={folds}
-          foldMode={foldMode}
+          interactionMode={interactionMode}
           onFaceClick={onFaceClick}
+          faceSketches={faceSketches}
+          selectedSketchLineId={selectedSketchLineId}
+          onSketchLineClick={onSketchLineClick}
         />
 
         <Grid
