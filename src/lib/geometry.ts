@@ -259,14 +259,19 @@ export function computeBendLinePositions(
 }
 
 /**
- * Compute the tip edge of a flange — the free edge at the end of the flat extension.
- * This edge can be selected to add a cascading flange.
+ * Compute ALL selectable edges of a flange:
+ *  - Outer tip edge (primary for cascading flanges, at outer surface)
+ *  - Inner tip edge (at inner surface)
+ *  - Two side edges (left/right ends of the tip face)
+ *
+ * The outer tip edge is positioned at the outer surface so cascading flanges
+ * start flush with the parent flange.
  */
-export function computeFlangeTipEdge(
+export function computeFlangeTipEdges(
   parentEdge: PartEdge,
   flange: Flange,
   thickness: number
-): PartEdge {
+): PartEdge[] {
   const A = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
   const R = flange.bendRadius;
@@ -274,6 +279,7 @@ export function computeFlangeTipEdge(
 
   const uDir = parentEdge.normal.clone().normalize();
   const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+  const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
 
   const sinA = Math.sin(A);
   const cosA = Math.cos(A);
@@ -282,45 +288,93 @@ export function computeFlangeTipEdge(
   const arcEndU = R * sinA;
   const arcEndW = R * (1 - cosA);
 
-  // Tangent at end of arc (direction of flat extension)
+  // Tangent at end of arc (flat extension direction)
   const tanU = cosA;
   const tanW = sinA;
 
-  // Tip position (end of flat extension, inner surface)
+  // Perpendicular direction (inner→outer surface offset)
+  const perpU = sinA;
+  const perpW = -cosA;
+
+  // Inner tip position
   const tipU = arcEndU + H * tanU;
   const tipW = arcEndW + H * tanW;
 
-  const tipStart = parentEdge.start.clone()
-    .add(uDir.clone().multiplyScalar(tipU))
-    .add(wDir.clone().multiplyScalar(tipW));
-  const tipEnd = parentEdge.end.clone()
-    .add(uDir.clone().multiplyScalar(tipU))
-    .add(wDir.clone().multiplyScalar(tipW));
+  // Outer tip position (offset by thickness)
+  const outerTipU = tipU + thickness * perpU;
+  const outerTipW = tipW + thickness * perpW;
 
-  // Tip edge normal = tangent direction (direction a new flange would extend)
+  function makePos(base: THREE.Vector3, u: number, w: number): THREE.Vector3 {
+    return base.clone()
+      .add(uDir.clone().multiplyScalar(u))
+      .add(wDir.clone().multiplyScalar(w));
+  }
+
+  const innerStart = makePos(parentEdge.start, tipU, tipW);
+  const innerEnd = makePos(parentEdge.end, tipU, tipW);
+  const outerStart = makePos(parentEdge.start, outerTipU, outerTipW);
+  const outerEnd = makePos(parentEdge.end, outerTipU, outerTipW);
+
+  // Tip normal = tangent direction (where a new flange would extend along the face plane)
   const tipNormal = uDir.clone().multiplyScalar(tanU)
     .add(wDir.clone().multiplyScalar(tanW))
     .normalize();
 
-  // Tip face normal = perpendicular to the flange surface at the tip,
-  // pointing OUTWARD (away from the concave side of the bend).
-  // This ensures cascading flanges with "up" direction bend away from existing geometry.
-  const tipFaceNormal = uDir.clone().multiplyScalar(sinA)
-    .add(wDir.clone().multiplyScalar(-cosA))
+  // Outer face normal (perpendicular to flange surface, pointing away from bend center)
+  const outerFaceNormal = uDir.clone().multiplyScalar(perpU)
+    .add(wDir.clone().multiplyScalar(perpW))
     .normalize();
 
-  return {
-    id: `flange_tip_${flange.id}`,
-    start: tipStart,
-    end: tipEnd,
-    faceId: `flange_${flange.id}`,
+  // Inner face normal (opposite)
+  const innerFaceNormal = outerFaceNormal.clone().negate();
+
+  const edges: PartEdge[] = [];
+
+  // 1) Outer tip edge — primary edge for cascading flanges (bends away from material)
+  edges.push({
+    id: `flange_tip_outer_${flange.id}`,
+    start: outerStart,
+    end: outerEnd,
+    faceId: `flange_outer_${flange.id}`,
     normal: tipNormal,
-    faceNormal: tipFaceNormal,
-  };
+    faceNormal: outerFaceNormal,
+  });
+
+  // 2) Inner tip edge
+  edges.push({
+    id: `flange_tip_inner_${flange.id}`,
+    start: innerStart,
+    end: innerEnd,
+    faceId: `flange_inner_${flange.id}`,
+    normal: tipNormal,
+    faceNormal: innerFaceNormal,
+  });
+
+  // 3) Side edge at the "start" end of the parent edge
+  edges.push({
+    id: `flange_side_s_${flange.id}`,
+    start: innerStart,
+    end: outerStart,
+    faceId: `flange_sideL_${flange.id}`,
+    normal: tipNormal,
+    faceNormal: edgeDir.clone().negate(),
+  });
+
+  // 4) Side edge at the "end" end of the parent edge
+  edges.push({
+    id: `flange_side_e_${flange.id}`,
+    start: innerEnd,
+    end: outerEnd,
+    faceId: `flange_sideR_${flange.id}`,
+    normal: tipNormal,
+    faceNormal: edgeDir.clone(),
+  });
+
+  return edges;
 }
 
 /**
- * Get all selectable edges: base profile edges + flange tip edges.
+ * Get all selectable edges: base profile edges + flange tip/side edges.
  * Supports nested flanges (flange on flange).
  */
 export function getAllSelectableEdges(
@@ -343,8 +397,8 @@ export function getAllSelectableEdges(
     for (const flange of remaining) {
       const parentEdge = edgeMap.get(flange.edgeId);
       if (parentEdge && !processed.has(flange.id)) {
-        const tipEdge = computeFlangeTipEdge(parentEdge, flange, thickness);
-        edgeMap.set(tipEdge.id, tipEdge);
+        const tipEdges = computeFlangeTipEdges(parentEdge, flange, thickness);
+        tipEdges.forEach(e => edgeMap.set(e.id, e));
         processed.add(flange.id);
       } else if (!parentEdge) {
         next.push(flange);
