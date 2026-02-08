@@ -177,87 +177,116 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
 }
 
 /**
- * Create a flange mesh for a given edge.
- * The flange bends from the top edge of the base face, rotating around the edge
- * by the bend angle, extending outward along the edge's normal direction.
+ * Create a flange mesh with a proper curved bend section and flat extension.
+ *
+ * Cross-section (perpendicular to the edge, in u-w space):
+ *   u = edge outward normal direction
+ *   w = Z × dirSign (up or down)
+ *
+ * The bend arc sweeps from 0 to bendAngle around a center at (0, R) in u-w
+ * space, starting from the edge point. The flat flange extends from the arc
+ * end in the tangent direction.
  */
 export function createFlangeMesh(
   edge: PartEdge,
   flange: Flange,
   thickness: number
 ): THREE.BufferGeometry {
-  const edgeVec = new THREE.Vector3().subVectors(edge.end, edge.start);
-  const edgeLen = edgeVec.length();
-  const edgeDirNorm = edgeVec.clone().normalize();
-
-  const angleRad = (flange.angle * Math.PI) / 180;
+  const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
+  const R = flange.bendRadius;
+  const H = flange.height;
 
-  // The flange plane: starts at the edge, rotates by bend angle around the edge axis
-  // The "up" direction from the base face is Z+
-  // The "outward" direction is the edge normal (in XY plane)
-  
-  // Flange extends in a direction that is a rotation of Z+ around the edge axis
-  // by the complement of the bend angle
-  // For 90° bend: flange goes along the normal direction
-  // For 0° bend: flange goes straight up (Z+)
-  
-  // The flange "height" direction after bending:
-  const flangeDir = new THREE.Vector3();
-  flangeDir.copy(edge.normal).multiplyScalar(Math.sin(angleRad));
-  flangeDir.z += Math.cos(angleRad) * dirSign;
-  flangeDir.normalize();
+  const uDir = edge.normal.clone().normalize();           // outward from base face
+  const wDir = new THREE.Vector3(0, 0, dirSign);          // perpendicular to base
 
-  // Build the flange as a flat quad, then extrude
-  // Four corners of the flange face (outer surface):
-  const p0 = edge.start.clone();
-  const p1 = edge.end.clone();
-  const p2 = edge.end.clone().add(flangeDir.clone().multiplyScalar(flange.height));
-  const p3 = edge.start.clone().add(flangeDir.clone().multiplyScalar(flange.height));
+  const BEND_SEGMENTS = 12;
 
-  // The thickness direction is perpendicular to both edgeDir and flangeDir
-  const thicknessDir = new THREE.Vector3().crossVectors(edgeDirNorm, flangeDir).normalize();
-  const thicknessOffset = thicknessDir.clone().multiplyScalar(thickness);
+  // ---------- Build 2D cross-section profile (u, w) ----------
+  // Each entry stores inner & outer positions in (u,w) space relative to the edge point.
+  interface CrossSection { iu: number; iw: number; ou: number; ow: number }
+  const profile: CrossSection[] = [];
 
-  // Inner surface
-  const p4 = p0.clone().add(thicknessOffset);
-  const p5 = p1.clone().add(thicknessOffset);
-  const p6 = p2.clone().add(thicknessOffset);
-  const p7 = p3.clone().add(thicknessOffset);
+  // 1. Bend arc
+  for (let i = 0; i <= BEND_SEGMENTS; i++) {
+    const t = (i / BEND_SEGMENTS) * bendAngleRad;
+    const sinT = Math.sin(t);
+    const cosT = Math.cos(t);
+    // Inner surface traces radius R around center (0, R)
+    const iu = R * sinT;
+    const iw = R * (1 - cosT);
+    // Outer surface is offset by thickness radially outward from center
+    const ou = iu + thickness * sinT;
+    const ow = iw - thickness * cosT;
+    profile.push({ iu, iw, ou, ow });
+  }
 
-  // Build geometry from 8 vertices, 6 faces (12 triangles)
-  const vertices = new Float32Array([
-    // Outer face (0,1,2,3)
-    p0.x, p0.y, p0.z,
-    p1.x, p1.y, p1.z,
-    p2.x, p2.y, p2.z,
-    p3.x, p3.y, p3.z,
-    // Inner face (4,5,6,7)
-    p4.x, p4.y, p4.z,
-    p5.x, p5.y, p5.z,
-    p6.x, p6.y, p6.z,
-    p7.x, p7.y, p7.z,
-  ]);
+  // 2. Flat flange after the arc
+  const arcEndT = bendAngleRad;
+  const sinA = Math.sin(arcEndT);
+  const cosA = Math.cos(arcEndT);
+  const arcEndIU = R * sinA;
+  const arcEndIW = R * (1 - cosA);
+  // Tangent direction at end of arc
+  const tanU = cosA;
+  const tanW = sinA;
+  // Perpendicular (thickness offset direction) = radial outward at end
+  const perpU = sinA;
+  const perpW = -cosA;
 
-  const indices = [
-    // Outer face
-    0, 1, 2,  0, 2, 3,
-    // Inner face (reversed winding)
-    4, 6, 5,  4, 7, 6,
-    // Top edge (far from base)
-    3, 2, 6,  3, 6, 7,
-    // Bottom edge (at base)
-    0, 5, 1,  0, 4, 5,
-    // Left side
-    0, 3, 7,  0, 7, 4,
-    // Right side
-    1, 5, 6,  1, 6, 2,
-  ];
+  profile.push({
+    iu: arcEndIU + H * tanU,
+    iw: arcEndIW + H * tanW,
+    ou: arcEndIU + H * tanU + thickness * perpU,
+    ow: arcEndIW + H * tanW + thickness * perpW,
+  });
+
+  // ---------- Convert to 3D vertices ----------
+  // For each profile point: 4 vertices (innerStart, innerEnd, outerStart, outerEnd)
+  const verts: number[] = [];
+  for (const p of profile) {
+    // Inner at edge start
+    const is = edge.start.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
+    // Inner at edge end
+    const ie = edge.end.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
+    // Outer at edge start
+    const os = edge.start.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
+    // Outer at edge end
+    const oe = edge.end.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
+    verts.push(
+      is.x, is.y, is.z,   // idx i*4+0
+      ie.x, ie.y, ie.z,   // idx i*4+1
+      os.x, os.y, os.z,   // idx i*4+2
+      oe.x, oe.y, oe.z,   // idx i*4+3
+    );
+  }
+
+  // ---------- Build index buffer ----------
+  const indices: number[] = [];
+  const N = profile.length;
+  for (let i = 0; i < N - 1; i++) {
+    const c = i * 4;
+    const n = (i + 1) * 4;
+
+    // Inner surface
+    indices.push(c, n, n + 1, c, n + 1, c + 1);
+    // Outer surface
+    indices.push(c + 2, c + 3, n + 3, c + 2, n + 3, n + 2);
+    // Left side (edge start)
+    indices.push(c, c + 2, n + 2, c, n + 2, n);
+    // Right side (edge end)
+    indices.push(c + 1, n + 1, n + 3, c + 1, n + 3, c + 3);
+  }
+
+  // Tip cap
+  const last = (N - 1) * 4;
+  indices.push(last, last + 1, last + 3, last, last + 3, last + 2);
+  // Base cap (at edge, first profile point)
+  indices.push(0, 3, 1, 0, 2, 3);
 
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   geometry.setIndex(indices);
   geometry.computeVertexNormals();
-
   return geometry;
 }
