@@ -39,9 +39,9 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
     <group>
       <mesh geometry={geometry}>
         <meshStandardMaterial
-          color="#c8cdd3"
-          metalness={0.4}
-          roughness={0.45}
+          color="#e8ecf0"
+          metalness={0.15}
+          roughness={0.6}
           side={THREE.DoubleSide}
           flatShading
         />
@@ -77,9 +77,9 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
       {/* Solid base face */}
       <mesh geometry={geometry}>
         <meshStandardMaterial
-          color="#c8cdd3"
-          metalness={0.4}
-          roughness={0.45}
+          color="#e8ecf0"
+          metalness={0.15}
+          roughness={0.6}
           side={THREE.DoubleSide}
         />
       </mesh>
@@ -156,9 +156,9 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
 function SceneSetup() {
   return (
     <>
-      <ambientLight intensity={0.5} />
+      <ambientLight intensity={0.7} />
       <directionalLight position={[50, 50, 50]} intensity={0.8} />
-      <directionalLight position={[-30, -20, 40]} intensity={0.3} />
+      <directionalLight position={[-30, -20, 40]} intensity={0.4} />
     </>
   );
 }
