@@ -6,6 +6,7 @@ import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
   createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
+  computeFoldBendLines,
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
@@ -84,41 +85,65 @@ function FoldMesh({
   isSketchMode?: boolean;
   onFaceClick?: (faceId: string) => void;
 }) {
-  const geometry = useMemo(
+  const result = useMemo(
     () => createFoldMesh(profile, fold, otherFolds, thickness),
     [profile, fold, otherFolds, thickness],
   );
-  const edgesGeo = useMemo(() => {
-    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
+
+  const tipEdgesGeo = useMemo(() => {
+    if (!result?.tip || !result.tip.attributes.position || result.tip.attributes.position.count === 0) {
       return null;
     }
-    return new THREE.EdgesGeometry(geometry, 15);
-  }, [geometry]);
+    return new THREE.EdgesGeometry(result.tip, 15);
+  }, [result]);
+
+  const bendLines = useMemo(() => {
+    const { bendStart, bendEnd } = computeFoldBendLines(profile, fold, thickness);
+    const toTuples = (pts: THREE.Vector3[]) =>
+      pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
+    return { start: toTuples(bendStart), end: toTuples(bendEnd) };
+  }, [profile, fold, thickness]);
 
   const foldFaceId = `fold_face_${fold.id}`;
 
-  if (!geometry) return null;
+  if (!result) return null;
+
+  const handleClick = (e: any) => {
+    if (isSketchMode && onFaceClick) {
+      e.stopPropagation();
+      onFaceClick(foldFaceId);
+    }
+  };
 
   return (
     <group>
+      {/* Arc (bend zone) — smooth shading for cylindrical appearance */}
       <mesh
-        geometry={geometry}
-        onClick={(e) => {
-          if (isSketchMode && onFaceClick) {
-            e.stopPropagation();
-            onFaceClick(foldFaceId);
-          }
-        }}
+        geometry={result.arc}
+        onClick={handleClick}
+        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+      >
+        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
+      </mesh>
+      {/* Tip (flat faces) — flat shading for sharp edges */}
+      <mesh
+        geometry={result.tip}
+        onClick={handleClick}
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
-      {edgesGeo && (
-        <lineSegments geometry={edgesGeo}>
+      {/* Tip edge outlines only (no wireframe on smooth arc) */}
+      {tipEdgesGeo && (
+        <lineSegments geometry={tipEdgesGeo}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
+      {/* Bend zone tangent lines */}
+      {bendLines.start.length > 0 && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
+      {bendLines.end.length > 0 && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
     </group>
   );
 }
