@@ -1,11 +1,10 @@
 import { useMemo, useRef } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
-import { OrbitControls, GizmoHelper, Grid, PerspectiveCamera, Line } from '@react-three/drei';
+import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import { createBaseFaceMesh, extractEdges, createFlangeMesh, computeBendLinePositions, getAllSelectableEdges, PartEdge, Flange } from '@/lib/geometry';
-import { ViewCube } from './ViewCube';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -253,7 +252,13 @@ export function Viewer3D({ profile, thickness, selectedEdgeId, onEdgeClick, flan
         />
 
         <GizmoHelper alignment="bottom-right" margin={[80, 80]}>
-          <ViewCube />
+          <GizmoViewcube
+            color="#e8ecf0"
+            hoverColor="#c5cad0"
+            textColor="#455a64"
+            strokeColor="#90a4ae"
+            opacity={1}
+          />
         </GizmoHelper>
       </Canvas>
 
