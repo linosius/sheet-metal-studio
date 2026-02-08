@@ -54,7 +54,7 @@ export default function Workspace() {
 
   // Flange operations
   const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
-    if (!selectedEdgeId) return;
+    if (!selectedEdgeId || !profile) return;
 
     // Check if edge already has a flange
     if (flanges.some(f => f.edgeId === selectedEdgeId)) {
@@ -62,20 +62,44 @@ export default function Workspace() {
       return;
     }
 
+    // Find the selected edge to determine correct direction
+    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges);
+    const edge = edges.find(e => e.id === selectedEdgeId);
+    if (!edge) return;
+
+    // Auto-correct direction to prevent self-intersection:
+    // For base edges, "down" always bends through the material, so force "up".
+    // For inner flange tip edges, "up" bends into existing geometry, so force "down".
+    let correctedDirection = direction;
+    const isBaseEdge = edge.faceId.startsWith('base_');
+    const isInnerTipEdge = edge.faceId.startsWith('flange_inner_');
+
+    if (isBaseEdge && direction === 'down') {
+      correctedDirection = 'up';
+      toast.info('Direction adjusted to "Up"', {
+        description: 'Flanges on base edges always bend away from the face to prevent self-intersection.',
+      });
+    } else if (isInnerTipEdge && direction === 'up') {
+      correctedDirection = 'down';
+      toast.info('Direction adjusted to "Down"', {
+        description: 'Inner tip edges bend outward to prevent self-intersection.',
+      });
+    }
+
     const flange: Flange = {
       id: generateId(),
       edgeId: selectedEdgeId,
       height,
       angle,
-      direction,
+      direction: correctedDirection,
       bendRadius: sketch.sheetMetalDefaults.bendRadius,
     };
 
     setFlanges(prev => [...prev, flange]);
     toast.success('Flange added', {
-      description: `${height}mm × ${angle}° ${direction} on ${selectedEdgeId}`,
+      description: `${height}mm × ${angle}° ${correctedDirection} on ${selectedEdgeId}`,
     });
-  }, [selectedEdgeId, flanges, sketch.sheetMetalDefaults.bendRadius]);
+  }, [selectedEdgeId, profile, flanges, sketch.sheetMetalDefaults.thickness, sketch.sheetMetalDefaults.bendRadius]);
 
   const handleUpdateFlange = useCallback((id: string, updates: Partial<Flange>) => {
     setFlanges(prev => prev.map(f => f.id === id ? { ...f, ...updates } : f));
