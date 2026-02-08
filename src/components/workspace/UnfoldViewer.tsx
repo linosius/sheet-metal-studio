@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { Point2D } from '@/lib/sheetmetal';
-import { Flange } from '@/lib/geometry';
+import { Flange, Fold } from '@/lib/geometry';
 import { computeFlatPattern, FlatPattern } from '@/lib/unfold';
 import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -10,13 +10,14 @@ interface UnfoldViewerProps {
   thickness: number;
   flanges: Flange[];
   kFactor: number;
+  folds?: Fold[];
 }
 
 const PADDING = 40;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 10;
 
-export function UnfoldViewer({ profile, thickness, flanges, kFactor }: UnfoldViewerProps) {
+export function UnfoldViewer({ profile, thickness, flanges, kFactor, folds = [] }: UnfoldViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [zoom, setZoom] = useState(1);
@@ -42,8 +43,8 @@ export function UnfoldViewer({ profile, thickness, flanges, kFactor }: UnfoldVie
 
   // Compute flat pattern
   const pattern = useMemo<FlatPattern>(
-    () => computeFlatPattern(profile, thickness, flanges, kFactor),
-    [profile, thickness, flanges, kFactor],
+    () => computeFlatPattern(profile, thickness, flanges, kFactor, folds),
+    [profile, thickness, flanges, kFactor, folds],
   );
 
   // Fit-to-view transform
