@@ -130,6 +130,7 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
             >
               {/* Reduced hitbox to prevent inner/outer tip edge overlap */}
               <boxGeometry args={[edgeLen, 3, 3]} />
+              <meshBasicMaterial transparent opacity={0} />
             </mesh>
 
             {isSelected && (
