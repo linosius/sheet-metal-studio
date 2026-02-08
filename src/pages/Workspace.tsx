@@ -122,17 +122,6 @@ export default function Workspace() {
     setSketchSelectedIds([]);
   }, []);
 
-  // ── Sketch line click handler (fold sub-mode) ──
-  const handleSketchLineClick = useCallback((lineId: string) => {
-    if (subMode !== 'fold') return;
-    if (folds.some(f => f.sketchLineId === lineId)) {
-      toast.error('This line already has a fold applied');
-      return;
-    }
-    setSelectedSketchLineId(lineId);
-    setFoldDialogOpen(true);
-  }, [subMode, folds]);
-
   const profileBounds = useMemo(() => {
     if (!profile) return null;
     const xs = profile.map(p => p.x);
@@ -143,6 +132,34 @@ export default function Workspace() {
       origin: { x: Math.min(...xs), y: Math.min(...ys) } as Point2D,
     };
   }, [profile]);
+
+  // ── Sketch line click handler (fold sub-mode) ──
+  const handleSketchLineClick = useCallback((lineId: string) => {
+    if (subMode !== 'fold') return;
+    if (folds.some(f => f.sketchLineId === lineId)) {
+      toast.error('This line already has a fold applied');
+      return;
+    }
+
+    // Validate fold qualification immediately
+    if (profileBounds) {
+      const sketchLine = faceSketches
+        .flatMap(fs => fs.entities)
+        .find(e => e.id === lineId && e.type === 'line') as FaceSketchLine | undefined;
+      if (sketchLine) {
+        const classification = classifySketchLineAsFold(sketchLine, profileBounds.width, profileBounds.height);
+        if (!classification) {
+          toast.error('Invalid fold line', {
+            description: 'Line must span edge-to-edge (full width or height) to be used as a fold line.',
+          });
+          return;
+        }
+      }
+    }
+
+    setSelectedSketchLineId(lineId);
+    setFoldDialogOpen(true);
+  }, [subMode, folds, profileBounds, faceSketches]);
 
   // ── Apply fold from dialog ──
   const handleApplyFold = useCallback((params: {
