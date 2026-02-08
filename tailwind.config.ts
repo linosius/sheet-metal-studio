@@ -13,6 +13,10 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ["Inter", "system-ui", "sans-serif"],
+        mono: ["JetBrains Mono", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
@@ -57,6 +61,17 @@ export default {
           border: "hsl(var(--sidebar-border))",
           ring: "hsl(var(--sidebar-ring))",
         },
+        cad: {
+          grid: "hsl(var(--cad-grid))",
+          "grid-major": "hsl(var(--cad-grid-major))",
+          "sketch-line": "hsl(var(--cad-sketch-line))",
+          dimension: "hsl(var(--cad-dimension))",
+          snap: "hsl(var(--cad-snap))",
+          selection: "hsl(var(--cad-selection))",
+          "bend-line": "hsl(var(--cad-bend-line))",
+          surface: "hsl(var(--cad-surface))",
+          toolbar: "hsl(var(--cad-toolbar))",
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -65,20 +80,12 @@ export default {
       },
       keyframes: {
         "accordion-down": {
-          from: {
-            height: "0",
-          },
-          to: {
-            height: "var(--radix-accordion-content-height)",
-          },
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
         },
         "accordion-up": {
-          from: {
-            height: "var(--radix-accordion-content-height)",
-          },
-          to: {
-            height: "0",
-          },
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
         },
       },
       animation: {
