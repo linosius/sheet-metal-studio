@@ -1,6 +1,6 @@
 import { Point2D } from '@/lib/sheetmetal';
 import { bendAllowance } from '@/lib/sheetmetal';
-import { Flange, Fold, getFixedProfile, getFoldMovingHeight } from '@/lib/geometry';
+import { Flange, Fold, getFixedProfile, getFoldMovingHeights } from '@/lib/geometry';
 
 // ========== Flat Pattern Types ==========
 
@@ -72,21 +72,52 @@ export function computeFlatPattern(
   let bendIndex = 1;
 
   // ---- Process folds ----
+  const pxs = profile.map(p => p.x);
+  const pys = profile.map(p => p.y);
+  const profMinX = Math.min(...pxs);
+  const profMinY = Math.min(...pys);
+
   for (const fold of folds) {
-    const movingHeight = getFoldMovingHeight(profile, fold);
-    const edgeIndex = fold.axis === 'x' ? 2 : 1;
-    const flatEdgeKey = `edge_top_${edgeIndex}`;
-    const parentFlatEdge = flatEdges.get(flatEdgeKey);
+    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
+
+    // Find fold line edge in fixed profile geometrically
+    const foldStart = { x: profMinX + fold.lineStart.x, y: profMinY + fold.lineStart.y };
+    const foldEnd = { x: profMinX + fold.lineEnd.x, y: profMinY + fold.lineEnd.y };
+
+    let parentFlatEdge: FlatEdge | undefined;
+    let heightAtStart = startHeight;
+    let heightAtEnd = endHeight;
+    const TOL = 1;
+
+    for (let i = 0; i < fixedProfile.length; i++) {
+      const curr = fixedProfile[i];
+      const next = fixedProfile[(i + 1) % fixedProfile.length];
+      const matchFwd = Math.hypot(curr.x - foldStart.x, curr.y - foldStart.y) < TOL &&
+                       Math.hypot(next.x - foldEnd.x, next.y - foldEnd.y) < TOL;
+      const matchRev = Math.hypot(curr.x - foldEnd.x, curr.y - foldEnd.y) < TOL &&
+                       Math.hypot(next.x - foldStart.x, next.y - foldStart.y) < TOL;
+      if (matchFwd || matchRev) {
+        parentFlatEdge = flatEdges.get(`edge_top_${i}`);
+        if (matchRev) {
+          heightAtStart = endHeight;
+          heightAtEnd = startHeight;
+        }
+        break;
+      }
+    }
+
     if (!parentFlatEdge) continue;
 
     const BA = bendAllowance(fold.bendRadius, kFactor, thickness, fold.angle);
-    const totalExtension = BA + movingHeight;
     const { start, end, outward } = parentFlatEdge;
+
+    const totalStart = BA + heightAtStart;
+    const totalEnd = BA + heightAtEnd;
 
     const p0 = start;
     const p1 = end;
-    const p2: Point2D = { x: end.x + outward.x * totalExtension, y: end.y + outward.y * totalExtension };
-    const p3: Point2D = { x: start.x + outward.x * totalExtension, y: start.y + outward.y * totalExtension };
+    const p2: Point2D = { x: end.x + outward.x * totalEnd, y: end.y + outward.y * totalEnd };
+    const p3: Point2D = { x: start.x + outward.x * totalStart, y: start.y + outward.y * totalStart };
 
     regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: [p0, p1, p2, p3] });
 

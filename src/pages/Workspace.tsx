@@ -14,7 +14,7 @@ import { useSketchStore } from '@/hooks/useSketchStore';
 import {
   extractProfile, getAllSelectableEdges, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchEntity, classifySketchLineAsFold,
-  getOppositeEdgeId, getUserFacingDirection,
+  getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine,
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
@@ -178,7 +178,7 @@ export default function Workspace() {
     const classification = classifySketchLineAsFold(sketchLine, profileBounds.width, profileBounds.height);
     if (!classification) {
       toast.error('Invalid fold line', {
-        description: 'Line must span edge-to-edge (full width or height) to be used as a fold line.',
+        description: 'Line must span edge-to-edge (opposite boundaries) to be used as a fold line.',
       });
       setFoldDialogOpen(false);
       setSelectedSketchLineId(null);
@@ -194,8 +194,8 @@ export default function Workspace() {
 
     const fold: Fold = {
       id: generateId(),
-      offset: classification.offset,
-      axis: classification.axis,
+      lineStart: classification.lineStart,
+      lineEnd: classification.lineEnd,
       angle: params.angle,
       direction: params.direction,
       bendRadius: params.bendRadius,
@@ -208,7 +208,7 @@ export default function Workspace() {
     setFoldDialogOpen(false);
     setSelectedSketchLineId(null);
     toast.success('Fold applied', {
-      description: `${classification.axis.toUpperCase()}-axis @ ${classification.offset.toFixed(1)}mm, ${params.angle}° ${params.direction}`,
+      description: `(${classification.lineStart.x.toFixed(0)},${classification.lineStart.y.toFixed(0)})→(${classification.lineEnd.x.toFixed(0)},${classification.lineEnd.y.toFixed(0)}), ${params.angle}° ${params.direction}`,
     });
   }, [selectedSketchLineId, profile, profileBounds, faceSketches, flanges.length]);
 
@@ -226,16 +226,12 @@ export default function Workspace() {
   const handleAddFlange = useCallback((height: number, angle: number, direction: 'up' | 'down') => {
     if (!selectedEdgeId || !profile) return;
 
-    const foldLineEdgeIds = folds.flatMap(fold => {
-      const idx = fold.axis === 'x' ? 2 : 1;
-      return [`edge_top_${idx}`, `edge_bot_${idx}`];
-    });
-    if (foldLineEdgeIds.includes(selectedEdgeId)) {
+    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
+    const selectedEdgeObj = edges.find(e => e.id === selectedEdgeId);
+    if (selectedEdgeObj && isEdgeOnFoldLine(selectedEdgeObj, folds, profile)) {
       toast.error('Cannot add flange on a fold line edge');
       return;
     }
-
-    const edges = getAllSelectableEdges(profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
     let targetEdgeId = selectedEdgeId;
 
     if (direction === 'down') {
