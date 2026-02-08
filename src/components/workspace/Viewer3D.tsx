@@ -48,7 +48,15 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
   );
 }
 
-function FoldMesh({ profile, fold, thickness }: { profile: Point2D[]; fold: Fold; thickness: number }) {
+function FoldMesh({
+  profile, fold, thickness, isSketchMode, onFaceClick,
+}: {
+  profile: Point2D[];
+  fold: Fold;
+  thickness: number;
+  isSketchMode?: boolean;
+  onFaceClick?: (faceId: string) => void;
+}) {
   const foldEdge = useMemo(() => computeFoldEdge(profile, thickness, fold), [profile, thickness, fold]);
   const movingHeight = useMemo(() => getFoldMovingHeight(profile, fold), [profile, fold]);
 
@@ -73,9 +81,21 @@ function FoldMesh({ profile, fold, thickness }: { profile: Point2D[]; fold: Fold
     return { start: toTuples(bendStart), end: toTuples(bendEnd) };
   }, [foldEdge, virtualFlange, thickness]);
 
+  const foldFaceId = `fold_face_${fold.id}`;
+
   return (
     <group>
-      <mesh geometry={geometry}>
+      <mesh
+        geometry={geometry}
+        onClick={(e) => {
+          if (isSketchMode && onFaceClick) {
+            e.stopPropagation();
+            onFaceClick(foldFaceId);
+          }
+        }}
+        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
+        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+      >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
       <lineSegments geometry={edgesGeo}>
@@ -184,6 +204,8 @@ function SheetMetalMesh({
       const idx = fold.axis === 'x' ? 2 : 1;
       ids.add(`edge_top_${idx}`);
       ids.add(`edge_bot_${idx}`);
+      // Also block the virtual fold edge itself
+      ids.add(`fold_edge_${fold.id}`);
     });
     return ids;
   }, [folds]);
@@ -306,7 +328,14 @@ function SheetMetalMesh({
 
       {/* Render folds */}
       {folds.map((fold) => (
-        <FoldMesh key={fold.id} profile={profile} fold={fold} thickness={thickness} />
+        <FoldMesh
+          key={fold.id}
+          profile={profile}
+          fold={fold}
+          thickness={thickness}
+          isSketchMode={isSketchMode}
+          onFaceClick={onFaceClick}
+        />
       ))}
     </group>
   );
