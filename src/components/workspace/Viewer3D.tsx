@@ -9,7 +9,7 @@ import {
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
-  computeFoldEdge, getFixedProfile, getFoldMovingHeights,
+  computeFoldEdge, getFixedProfile, getFoldMovingHeight, getFoldMovingHeights,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
