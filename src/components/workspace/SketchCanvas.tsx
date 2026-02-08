@@ -84,6 +84,8 @@ export function SketchCanvas({
         if (activeTool === 'line') {
           if (distance2D(drawStart, snapped) > 0.5) {
             onAddLine(drawStart, snapped);
+            // Chain: start next line from this endpoint
+            setDrawStart(snapped);
           }
         } else if (activeTool === 'rect') {
           const w = snapped.x - drawStart.x;
@@ -95,8 +97,8 @@ export function SketchCanvas({
               Math.abs(h),
             );
           }
+          setDrawStart(null);
         }
-        setDrawStart(null);
       }
     }
   }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onDeselectAll, viewBox]);
