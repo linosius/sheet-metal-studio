@@ -145,8 +145,9 @@ export function createBaseFaceMesh(
 }
 
 /**
- * Extract selectable edges from a profile (the "top" edges at z=thickness).
- * Each edge of the profile polygon becomes a selectable edge for flange placement.
+ * Extract selectable edges from a profile.
+ * Returns both top-face edges (z=thickness) and bottom-face edges (z=0),
+ * giving the user full control over flange placement.
  */
 export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] {
   const edges: PartEdge[] = [];
@@ -166,13 +167,24 @@ export function extractEdges(profile: Point2D[], thickness: number): PartEdge[] 
     const nx = dy / len;
     const ny = -dx / len;
 
+    // Top-face edge (z = thickness), faceNormal points up
     edges.push({
-      id: `edge_${i}`,
+      id: `edge_top_${i}`,
       start: new THREE.Vector3(curr.x, curr.y, thickness),
       end: new THREE.Vector3(next.x, next.y, thickness),
-      faceId: 'base',
+      faceId: 'base_top',
       normal: new THREE.Vector3(nx, ny, 0).normalize(),
       faceNormal: new THREE.Vector3(0, 0, 1),
+    });
+
+    // Bottom-face edge (z = 0), faceNormal points down
+    edges.push({
+      id: `edge_bot_${i}`,
+      start: new THREE.Vector3(curr.x, curr.y, 0),
+      end: new THREE.Vector3(next.x, next.y, 0),
+      faceId: 'base_bot',
+      normal: new THREE.Vector3(nx, ny, 0).normalize(),
+      faceNormal: new THREE.Vector3(0, 0, -1),
     });
   }
 
@@ -291,9 +303,10 @@ export function computeFlangeTipEdge(
     .normalize();
 
   // Tip face normal = perpendicular to the flange surface at the tip,
-  // pointing toward the inner (concave) side of the bend
-  const tipFaceNormal = uDir.clone().multiplyScalar(-sinA)
-    .add(wDir.clone().multiplyScalar(cosA))
+  // pointing OUTWARD (away from the concave side of the bend).
+  // This ensures cascading flanges with "up" direction bend away from existing geometry.
+  const tipFaceNormal = uDir.clone().multiplyScalar(sinA)
+    .add(wDir.clone().multiplyScalar(-cosA))
     .normalize();
 
   return {

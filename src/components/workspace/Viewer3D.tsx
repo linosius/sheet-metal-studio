@@ -127,7 +127,7 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
                 document.body.style.cursor = 'default';
               }}
             >
-              <boxGeometry args={[edgeLen, 3, 3]} />
+              <boxGeometry args={[edgeLen, 6, 6]} />
               <meshBasicMaterial transparent opacity={0} />
             </mesh>
 
