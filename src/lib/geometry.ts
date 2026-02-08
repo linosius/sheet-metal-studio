@@ -388,6 +388,22 @@ export function getAllSelectableEdges(
   const edgeMap = new Map<string, PartEdge>();
   baseEdges.forEach(e => edgeMap.set(e.id, e));
 
+  // Process folds to add their tip/side edges (edges on folded faces)
+  for (const fold of folds) {
+    const foldEdge = computeFoldEdge(profile, thickness, fold);
+    const movingHeight = getFoldMovingHeight(profile, fold);
+    const virtualFlange: Flange = {
+      id: `fold_${fold.id}`,
+      edgeId: foldEdge.id,
+      height: movingHeight,
+      angle: fold.angle,
+      direction: 'up',
+      bendRadius: fold.bendRadius,
+    };
+    const tipEdges = computeFlangeTipEdges(foldEdge, virtualFlange, thickness);
+    tipEdges.forEach(e => edgeMap.set(e.id, e));
+  }
+
   // Process flanges iteratively to resolve nested dependencies
   const processed = new Set<string>();
   let remaining = [...flanges];
