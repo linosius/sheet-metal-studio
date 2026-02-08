@@ -62,7 +62,7 @@ export default function Workspace() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [sketch, currentStep]);
+  }, [currentStep, sketch.setActiveTool]);
 
   const is3DStep = currentStep === 'base-face' || currentStep === 'flanges';
 
