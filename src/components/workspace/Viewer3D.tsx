@@ -86,8 +86,8 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
 
-      {/* Selectable edges (hide inner tip edges — they overlap outer tip hitboxes and cause confusion) */}
-      {edges.filter(e => !e.id.includes('_tip_inner_')).map((edge) => {
+      {/* Selectable edges — inner tip edges are now shown so users can bend "the other way" */}
+      {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
         const edgeMid = new THREE.Vector3(
@@ -99,7 +99,8 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
         const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
         const edgeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), edgeDir);
 
-        const edgeColor = hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : '#3b82f6';
+        const isInnerTip = edge.id.includes('_tip_inner_');
+        const edgeColor = hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : isInnerTip ? '#f59e0b' : '#3b82f6';
 
         return (
           <group key={edge.id}>
@@ -127,8 +128,8 @@ function SheetMetalMesh({ profile, thickness, selectedEdgeId, onEdgeClick, flang
                 document.body.style.cursor = 'default';
               }}
             >
-              <boxGeometry args={[edgeLen, 6, 6]} />
-              <meshBasicMaterial transparent opacity={0} />
+              {/* Reduced hitbox to prevent inner/outer tip edge overlap */}
+              <boxGeometry args={[edgeLen, 3, 3]} />
             </mesh>
 
             {isSelected && (

@@ -68,25 +68,14 @@ export default function Workspace() {
     const edge = edges.find(e => e.id === selectedEdgeId);
     if (!edge) return;
 
-    // Auto-correct direction to prevent self-intersection:
-    // Base edges: "down" bends through the material, force "up".
-    // Outer tip edges: both "up" and "down" are valid — "down" creates a return bend
-    //   that folds back over the flange (doesn't intersect material).
-    // Side edges: both directions are valid (bend along parent edge), no correction.
-    // Inner tip edges: hidden from selection, but if reached, force "down".
-    let correctedDirection = direction;
-    const isBaseEdge = edge.faceId.startsWith('base_');
-    const isInnerTipEdge = edge.faceId.startsWith('flange_inner_');
-
-    if (isBaseEdge && direction === 'down') {
-      correctedDirection = 'up';
+    // The geometry engine only supports "up" (bending away from the face).
+    // "Down" places the bend arc center inside the material, producing invalid geometry.
+    // To bend "the other way", the user should select the edge on the opposite face
+    // (e.g., inner tip edge instead of outer tip edge).
+    let correctedDirection: 'up' | 'down' = 'up';
+    if (direction === 'down') {
       toast.info('Direction adjusted to "Up"', {
-        description: 'Flanges on base edges always bend away from the face to prevent self-intersection.',
-      });
-    } else if (isInnerTipEdge && direction === 'up') {
-      correctedDirection = 'down';
-      toast.info('Direction adjusted to "Down"', {
-        description: 'Inner tip edges bend outward to prevent self-intersection.',
+        description: 'To bend the other way, select the edge on the opposite face (e.g., inner tip instead of outer tip).',
       });
     }
 
