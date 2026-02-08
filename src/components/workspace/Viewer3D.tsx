@@ -53,17 +53,18 @@ function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flang
 }
 
 function FoldMesh({
-  profile, fold, thickness, isSketchMode, onFaceClick,
+  profile, fold, otherFolds, thickness, isSketchMode, onFaceClick,
 }: {
   profile: Point2D[];
   fold: Fold;
+  otherFolds: Fold[];
   thickness: number;
   isSketchMode?: boolean;
   onFaceClick?: (faceId: string) => void;
 }) {
   const geometry = useMemo(
-    () => createFoldMesh(profile, fold, thickness),
-    [profile, fold, thickness],
+    () => createFoldMesh(profile, fold, otherFolds, thickness),
+    [profile, fold, otherFolds, thickness],
   );
   const edgesGeo = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
 
@@ -275,7 +276,7 @@ function SheetMetalMesh({
         <lineBasicMaterial color="#475569" linewidth={1} />
       </lineSegments>
 
-      {/* Selectable edges (edge mode only) */}
+      {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
       {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
@@ -297,16 +298,21 @@ function SheetMetalMesh({
           : isInnerTip ? '#f59e0b'
           : '#3b82f6';
 
+        // Only show colored edge highlights in edge mode (or fold-line edges always)
+        const showEdgeLine = isEdgeMode || isFoldLine;
+
         return (
           <group key={edge.id}>
-            <Line
-              points={[
-                [edge.start.x, edge.start.y, edge.start.z],
-                [edge.end.x, edge.end.y, edge.end.z],
-              ]}
-              color={edgeColor}
-              lineWidth={isSelected ? 3 : isFoldLine ? 2.5 : 2}
-            />
+            {showEdgeLine && (
+              <Line
+                points={[
+                  [edge.start.x, edge.start.y, edge.start.z],
+                  [edge.end.x, edge.end.y, edge.end.z],
+                ]}
+                color={edgeColor}
+                lineWidth={isSelected ? 3 : isFoldLine ? 2.5 : 2}
+              />
+            )}
 
             {isEdgeMode && (
               <mesh
@@ -334,8 +340,8 @@ function SheetMetalMesh({
         );
       })}
 
-      {/* Render sketch lines on 3D faces */}
-      {(isFoldMode || isSketchMode) && allLines.map(line => {
+      {/* Render sketch lines on 3D faces (hide lines that already have folds) */}
+      {(isFoldMode || isSketchMode) && allLines.filter(line => !foldedLineIds.has(line.id)).map(line => {
         const classification = classifySketchLineAsFold(line, faceBounds.width, faceBounds.height);
         return (
           <SketchLine3D
@@ -344,7 +350,7 @@ function SheetMetalMesh({
             profile={profile}
             thickness={thickness}
             isSelected={selectedSketchLineId === line.id}
-            hasFold={foldedLineIds.has(line.id)}
+            hasFold={false}
             isFoldMode={isFoldMode}
             isFoldQualified={!!classification}
             onSketchLineClick={onSketchLineClick}
@@ -370,11 +376,12 @@ function SheetMetalMesh({
       })}
 
       {/* Render folds */}
-      {folds.map((fold) => (
+      {folds.map((fold, i) => (
         <FoldMesh
           key={fold.id}
           profile={profile}
           fold={fold}
+          otherFolds={folds.filter((_, j) => j !== i)}
           thickness={thickness}
           isSketchMode={isSketchMode}
           onFaceClick={onFaceClick}

@@ -910,13 +910,13 @@ export function isEdgeOnFoldLine(edge: PartEdge, folds: Fold[], profile: Point2D
 
 /**
  * Create a fold mesh from the actual moving polygon shape.
- * Instead of approximating with two end-heights, this clips the base face polygon
- * by the fold line, computes fold-line-local coordinates for every vertex of the
- * moving polygon, and builds proper arc + tip geometry that matches the true shape.
+ * Clips the base face polygon by the fold line, excluding regions already claimed
+ * by other folds, then builds proper arc + tip geometry that matches the true shape.
  */
 export function createFoldMesh(
   profile: Point2D[],
   fold: Fold,
+  otherFolds: Fold[],
   thickness: number,
 ): THREE.BufferGeometry {
   const xs = profile.map(p => p.x);
@@ -925,6 +925,15 @@ export function createFoldMesh(
   const minY = Math.min(...ys);
   const faceW = Math.max(...xs) - minX;
   const faceH = Math.max(...ys) - minY;
+
+  // First, remove regions claimed by other folds from the available profile
+  let availableProfile = [...profile];
+  for (const other of otherFolds) {
+    const lp = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
+    const n = getFoldNormal(other, faceW, faceH);
+    availableProfile = clipPolygonByLine(availableProfile, lp, n);
+  }
+  if (availableProfile.length < 3) return new THREE.BufferGeometry();
 
   // Fold line in face coordinates
   const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
@@ -937,9 +946,9 @@ export function createFoldMesh(
   const tang = { x: edx / eLen, y: edy / eLen };
   const norm = getFoldNormal(fold, faceW, faceH);
 
-  // Get moving polygon (the part that folds away)
+  // Get moving polygon from the available (non-overlapping) profile
   const negN = { x: -norm.x, y: -norm.y };
-  const movPoly = clipPolygonByLine([...profile], fs, negN);
+  const movPoly = clipPolygonByLine(availableProfile, fs, negN);
   if (movPoly.length < 3) return new THREE.BufferGeometry();
 
   // 3D coordinate system
