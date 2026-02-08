@@ -29,6 +29,13 @@ export function FoldDialog({ open, sketchLine, defaultBendRadius, onApply, onClo
   const [bendRadius, setBendRadius] = useState(defaultBendRadius);
   const [foldLocation, setFoldLocation] = useState<FoldLocation>('centerline');
 
+  // Derive orientation from line geometry
+  const isHoriz = Math.abs(sketchLine.start.y - sketchLine.end.y) < 1;
+  const orientation = isHoriz ? 'Horizontal' : Math.abs(sketchLine.start.x - sketchLine.end.x) < 1 ? 'Vertical' : 'Diagonal';
+  const offset = isHoriz
+    ? ((sketchLine.start.y + sketchLine.end.y) / 2).toFixed(1)
+    : ((sketchLine.start.x + sketchLine.end.x) / 2).toFixed(1);
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-md">
@@ -41,7 +48,10 @@ export function FoldDialog({ open, sketchLine, defaultBendRadius, onApply, onClo
           <div className="p-3 rounded-lg bg-muted/50 border">
             <p className="text-xs text-muted-foreground mb-1">Bend Line</p>
             <p className="text-sm font-mono font-medium">
-              {sketchLine.axis === 'x' ? 'Horizontal' : 'Vertical'} @ {sketchLine.dimension}mm
+              {orientation} @ {offset}mm
+            </p>
+            <p className="text-[10px] text-muted-foreground mt-1">
+              ({sketchLine.start.x.toFixed(1)}, {sketchLine.start.y.toFixed(1)}) → ({sketchLine.end.x.toFixed(1)}, {sketchLine.end.y.toFixed(1)})
             </p>
           </div>
 

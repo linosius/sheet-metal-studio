@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { SheetMetalDefaults, MATERIALS } from '@/lib/sheetmetal';
-import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors, PenLine } from 'lucide-react';
+import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors, PenLine, Minus, Circle, Square } from 'lucide-react';
 import { PartEdge, Flange, Fold, FaceSketch, FaceSketchLine, getUserFacingDirection } from '@/lib/geometry';
 
 interface PropertiesPanelProps {
@@ -43,7 +43,10 @@ export function PropertiesPanel({
     : null;
   const edgeHasFlange = !!existingFlange;
 
-  const totalSketchLines = faceSketches.reduce((sum, fs) => sum + fs.lines.length, 0);
+  const totalEntities = faceSketches.reduce((sum, fs) => sum + fs.entities.length, 0);
+  const lineCount = faceSketches.reduce((sum, fs) => sum + fs.entities.filter(e => e.type === 'line').length, 0);
+  const circleCount = faceSketches.reduce((sum, fs) => sum + fs.entities.filter(e => e.type === 'circle').length, 0);
+  const rectCount = faceSketches.reduce((sum, fs) => sum + fs.entities.filter(e => e.type === 'rect').length, 0);
 
   return (
     <div className="w-64 border-l bg-card overflow-y-auto flex flex-col">
@@ -136,7 +139,7 @@ export function PropertiesPanel({
               <p className="text-xs font-semibold">2D Sketch</p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Click on a face in the 3D view to open the sketch editor. Draw fold lines and set their dimensions.
+              Click on a face in the 3D view to open the sketch editor. Draw lines, circles, and rectangles directly on the part.
             </p>
           </div>
         )}
@@ -151,7 +154,7 @@ export function PropertiesPanel({
                   <p className="text-xs font-semibold">Selected Line</p>
                 </div>
                 <div className="text-[10px] font-mono text-muted-foreground">
-                  {selectedSketchLine.axis === 'x' ? 'Horizontal' : 'Vertical'} @ {selectedSketchLine.dimension}mm
+                  ({selectedSketchLine.start.x.toFixed(1)}, {selectedSketchLine.start.y.toFixed(1)}) → ({selectedSketchLine.end.x.toFixed(1)}, {selectedSketchLine.end.y.toFixed(1)})
                 </div>
                 <p className="text-[10px] text-muted-foreground">
                   Configure fold parameters in the dialog.
@@ -164,7 +167,7 @@ export function PropertiesPanel({
                   <p className="text-xs font-semibold">Fold Mode</p>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  {totalSketchLines > 0
+                  {lineCount > 0
                     ? 'Click a sketch line (red dashed) on the 3D model to apply a fold.'
                     : 'No sketch lines yet. Switch to 2D Sketch mode and draw fold lines first.'}
                 </p>
@@ -284,30 +287,62 @@ export function PropertiesPanel({
         )}
 
         {/* ── Face sketches summary ── */}
-        {mode === '3d' && totalSketchLines > 0 && (
+        {mode === '3d' && totalEntities > 0 && (
           <>
             <Separator />
             <div className="space-y-2">
               <div className="flex items-center gap-2">
                 <PenLine className="h-3.5 w-3.5 text-primary" />
-                <p className="text-xs font-semibold">Sketch Lines ({totalSketchLines})</p>
+                <p className="text-xs font-semibold">
+                  Sketch Entities ({totalEntities})
+                  {lineCount > 0 && <span className="text-muted-foreground font-normal ml-1">{lineCount}L</span>}
+                  {circleCount > 0 && <span className="text-muted-foreground font-normal ml-1">{circleCount}C</span>}
+                  {rectCount > 0 && <span className="text-muted-foreground font-normal ml-1">{rectCount}R</span>}
+                </p>
               </div>
-              {faceSketches.map(fs => fs.lines.map(line => {
-                const hasFold = folds.some(f => f.sketchLineId === line.id);
-                return (
-                  <div key={line.id}
-                    className="flex items-center justify-between p-2 rounded bg-muted/30 border text-[10px]"
-                  >
-                    <div className="font-mono">
-                      <span className="text-muted-foreground">
-                        {line.axis === 'x' ? 'H' : 'V'} @ {line.dimension}mm
-                      </span>
-                      {hasFold && (
-                        <span className="ml-1.5 text-accent font-semibold">✓ folded</span>
-                      )}
+              {faceSketches.map(fs => fs.entities.map(entity => {
+                if (entity.type === 'line') {
+                  const hasFold = folds.some(f => f.sketchLineId === entity.id);
+                  return (
+                    <div key={entity.id}
+                      className="flex items-center justify-between p-2 rounded bg-muted/30 border text-[10px]">
+                      <div className="font-mono flex items-center gap-1">
+                        <Minus className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-muted-foreground">
+                          ({entity.start.x.toFixed(0)}, {entity.start.y.toFixed(0)}) → ({entity.end.x.toFixed(0)}, {entity.end.y.toFixed(0)})
+                        </span>
+                        {hasFold && <span className="ml-1.5 text-accent font-semibold">✓ folded</span>}
+                      </div>
                     </div>
-                  </div>
-                );
+                  );
+                }
+                if (entity.type === 'circle') {
+                  return (
+                    <div key={entity.id}
+                      className="flex items-center justify-between p-2 rounded bg-muted/30 border text-[10px]">
+                      <div className="font-mono flex items-center gap-1">
+                        <Circle className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-muted-foreground">
+                          R{entity.radius.toFixed(1)} @ ({entity.center.x.toFixed(0)}, {entity.center.y.toFixed(0)})
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
+                if (entity.type === 'rect') {
+                  return (
+                    <div key={entity.id}
+                      className="flex items-center justify-between p-2 rounded bg-muted/30 border text-[10px]">
+                      <div className="font-mono flex items-center gap-1">
+                        <Square className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-muted-foreground">
+                          {entity.width.toFixed(0)} × {entity.height.toFixed(0)} @ ({entity.origin.x.toFixed(0)}, {entity.origin.y.toFixed(0)})
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
               }))}
             </div>
           </>

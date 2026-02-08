@@ -7,8 +7,11 @@ import { Point2D } from '@/lib/sheetmetal';
 import {
   createBaseFaceMesh, createFlangeMesh, computeBendLinePositions,
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
+  FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
+  classifySketchLineAsFold,
   computeFoldEdge, getFixedProfile, getFoldMovingHeight,
 } from '@/lib/geometry';
+import { FaceSketchPlane } from './FaceSketchPlane';
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -22,6 +25,7 @@ interface SheetMetalMeshProps {
   faceSketches: FaceSketch[];
   selectedSketchLineId: string | null;
   onSketchLineClick?: (lineId: string) => void;
+  activeSketchFaceId?: string | null;
 }
 
 function FlangeMesh({ edge, flange, thickness }: { edge: PartEdge; flange: Flange; thickness: number }) {
@@ -108,36 +112,27 @@ function FoldMesh({
 }
 
 function SketchLine3D({
-  line, profile, thickness, isSelected, hasFold, isFoldMode, onSketchLineClick,
+  line, profile, thickness, isSelected, hasFold, isFoldMode, isFoldQualified, onSketchLineClick,
 }: {
-  line: { id: string; axis: 'x' | 'y'; dimension: number };
+  line: FaceSketchLine;
   profile: Point2D[];
   thickness: number;
   isSelected: boolean;
   hasFold: boolean;
   isFoldMode: boolean;
+  isFoldQualified: boolean;
   onSketchLineClick?: (id: string) => void;
 }) {
   const positions = useMemo(() => {
     const xs = profile.map(p => p.x);
     const ys = profile.map(p => p.y);
-    const minX = Math.min(...xs), maxX = Math.max(...xs);
-    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
     const z = thickness + 0.05;
-
-    if (line.axis === 'x') {
-      const y = minY + line.dimension;
-      return {
-        start: [minX, y, z] as [number, number, number],
-        end: [maxX, y, z] as [number, number, number],
-      };
-    } else {
-      const x = minX + line.dimension;
-      return {
-        start: [x, minY, z] as [number, number, number],
-        end: [x, maxY, z] as [number, number, number],
-      };
-    }
+    return {
+      start: [minX + line.start.x, minY + line.start.y, z] as [number, number, number],
+      end: [minX + line.end.x, minY + line.end.y, z] as [number, number, number],
+    };
   }, [line, profile, thickness]);
 
   const { midpoint, quaternion, length } = useMemo(() => {
@@ -161,7 +156,7 @@ function SketchLine3D({
         dashSize={2}
         gapSize={1}
       />
-      {isFoldMode && !hasFold && (
+      {isFoldMode && !hasFold && isFoldQualified && (
         <mesh
           position={midpoint}
           quaternion={quaternion}
@@ -177,10 +172,51 @@ function SketchLine3D({
   );
 }
 
+function SketchCircle3D({ entity, profile, thickness }: {
+  entity: FaceSketchCircle; profile: Point2D[]; thickness: number;
+}) {
+  const points = useMemo(() => {
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const z = thickness + 0.05;
+    const pts: [number, number, number][] = [];
+    for (let i = 0; i <= 64; i++) {
+      const a = (i / 64) * Math.PI * 2;
+      pts.push([minX + entity.center.x + Math.cos(a) * entity.radius, minY + entity.center.y + Math.sin(a) * entity.radius, z]);
+    }
+    return pts;
+  }, [entity, profile, thickness]);
+  return <Line points={points} color="#ef4444" lineWidth={2} />;
+}
+
+function SketchRect3D({ entity, profile, thickness }: {
+  entity: FaceSketchRect; profile: Point2D[]; thickness: number;
+}) {
+  const points = useMemo(() => {
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const z = thickness + 0.05;
+    const { origin, width, height } = entity;
+    return [
+      [minX + origin.x, minY + origin.y, z],
+      [minX + origin.x + width, minY + origin.y, z],
+      [minX + origin.x + width, minY + origin.y + height, z],
+      [minX + origin.x, minY + origin.y + height, z],
+      [minX + origin.x, minY + origin.y, z],
+    ] as [number, number, number][];
+  }, [entity, profile, thickness]);
+  return <Line points={points} color="#ef4444" lineWidth={2} />;
+}
+
 function SheetMetalMesh({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds, interactionMode, onFaceClick,
   faceSketches, selectedSketchLineId, onSketchLineClick,
+  activeSketchFaceId,
 }: SheetMetalMeshProps) {
   const fixedProfile = useMemo(() => getFixedProfile(profile, folds), [profile, folds]);
   const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness), [fixedProfile, thickness]);
@@ -204,21 +240,33 @@ function SheetMetalMesh({
       const idx = fold.axis === 'x' ? 2 : 1;
       ids.add(`edge_top_${idx}`);
       ids.add(`edge_bot_${idx}`);
-      // Also block the virtual fold edge itself
       ids.add(`fold_edge_${fold.id}`);
     });
     return ids;
   }, [folds]);
 
-  const allSketchLines = useMemo(() =>
-    faceSketches.flatMap(fs => fs.lines),
-    [faceSketches],
-  );
+  // Extract entities from non-active face sketches
+  const allEntities = useMemo(() => {
+    const sketches = activeSketchFaceId
+      ? faceSketches.filter(fs => fs.faceId !== activeSketchFaceId)
+      : faceSketches;
+    return sketches.flatMap(fs => fs.entities);
+  }, [faceSketches, activeSketchFaceId]);
+
+  const allLines = useMemo(() => allEntities.filter((e): e is FaceSketchLine => e.type === 'line'), [allEntities]);
+  const allCircles = useMemo(() => allEntities.filter((e): e is FaceSketchCircle => e.type === 'circle'), [allEntities]);
+  const allRects = useMemo(() => allEntities.filter((e): e is FaceSketchRect => e.type === 'rect'), [allEntities]);
 
   const foldedLineIds = useMemo(() =>
     new Set(folds.filter(f => f.sketchLineId).map(f => f.sketchLineId!)),
     [folds],
   );
+
+  const faceBounds = useMemo(() => {
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  }, [profile]);
 
   const isSketchMode = interactionMode === 'sketch';
   const isFoldMode = interactionMode === 'fold';
@@ -305,18 +353,32 @@ function SheetMetalMesh({
         );
       })}
 
-      {/* Render sketch lines on 3D faces (fold & sketch modes) */}
-      {(isFoldMode || isSketchMode) && allSketchLines.map(line => (
-        <SketchLine3D
-          key={line.id}
-          line={line}
-          profile={profile}
-          thickness={thickness}
-          isSelected={selectedSketchLineId === line.id}
-          hasFold={foldedLineIds.has(line.id)}
-          isFoldMode={isFoldMode}
-          onSketchLineClick={onSketchLineClick}
-        />
+      {/* Render sketch lines on 3D faces */}
+      {(isFoldMode || isSketchMode) && allLines.map(line => {
+        const classification = classifySketchLineAsFold(line, faceBounds.width, faceBounds.height);
+        return (
+          <SketchLine3D
+            key={line.id}
+            line={line}
+            profile={profile}
+            thickness={thickness}
+            isSelected={selectedSketchLineId === line.id}
+            hasFold={foldedLineIds.has(line.id)}
+            isFoldMode={isFoldMode}
+            isFoldQualified={!!classification}
+            onSketchLineClick={onSketchLineClick}
+          />
+        );
+      })}
+
+      {/* Render sketch circles on 3D faces */}
+      {(isFoldMode || isSketchMode) && allCircles.map(entity => (
+        <SketchCircle3D key={entity.id} entity={entity} profile={profile} thickness={thickness} />
+      ))}
+
+      {/* Render sketch rects on 3D faces */}
+      {(isFoldMode || isSketchMode) && allRects.map(entity => (
+        <SketchRect3D key={entity.id} entity={entity} profile={profile} thickness={thickness} />
       ))}
 
       {/* Render flanges */}
@@ -380,12 +442,32 @@ interface Viewer3DProps {
   faceSketches?: FaceSketch[];
   selectedSketchLineId?: string | null;
   onSketchLineClick?: (lineId: string) => void;
+  children?: React.ReactNode;
+  // Sketch plane props
+  sketchPlaneActive?: boolean;
+  sketchFaceId?: string | null;
+  sketchFaceOrigin?: Point2D;
+  sketchFaceWidth?: number;
+  sketchFaceHeight?: number;
+  sketchEntities?: FaceSketchEntity[];
+  sketchActiveTool?: 'select' | 'line' | 'circle' | 'rect';
+  sketchGridSize?: number;
+  sketchSnapEnabled?: boolean;
+  onSketchAddEntity?: (entity: FaceSketchEntity) => void;
+  onSketchRemoveEntity?: (id: string) => void;
+  sketchSelectedIds?: string[];
+  onSketchSelectEntity?: (id: string) => void;
 }
 
 export function Viewer3D({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds = [], interactionMode = 'view', onFaceClick,
   faceSketches = [], selectedSketchLineId = null, onSketchLineClick,
+  children,
+  sketchPlaneActive, sketchFaceId, sketchFaceOrigin,
+  sketchFaceWidth, sketchFaceHeight,
+  sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
+  onSketchAddEntity, onSketchRemoveEntity, sketchSelectedIds, onSketchSelectEntity,
 }: Viewer3DProps) {
   const cameraApi = useRef({ reset: () => {} });
 
@@ -426,7 +508,26 @@ export function Viewer3D({
           faceSketches={faceSketches}
           selectedSketchLineId={selectedSketchLineId}
           onSketchLineClick={onSketchLineClick}
+          activeSketchFaceId={sketchPlaneActive ? sketchFaceId : null}
         />
+
+        {/* Sketch plane when active */}
+        {sketchPlaneActive && sketchFaceOrigin && onSketchAddEntity && onSketchRemoveEntity && onSketchSelectEntity && (
+          <FaceSketchPlane
+            faceOrigin={sketchFaceOrigin}
+            faceWidth={sketchFaceWidth!}
+            faceHeight={sketchFaceHeight!}
+            thickness={thickness}
+            entities={sketchEntities || []}
+            activeTool={sketchActiveTool || 'line'}
+            gridSize={sketchGridSize || 5}
+            snapEnabled={sketchSnapEnabled ?? true}
+            onAddEntity={onSketchAddEntity}
+            onRemoveEntity={onSketchRemoveEntity}
+            selectedIds={sketchSelectedIds || []}
+            onSelectEntity={onSketchSelectEntity}
+          />
+        )}
 
         <Grid
           args={[500, 500]}
@@ -453,6 +554,8 @@ export function Viewer3D({
       >
         <Home className="h-4 w-4" />
       </button>
+
+      {children}
     </div>
   );
 }
