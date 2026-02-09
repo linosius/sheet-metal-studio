@@ -29,9 +29,10 @@ interface SheetMetalMeshProps {
   activeSketchFaceId?: string | null;
 }
 
-function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick }: {
+function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLines = true }: {
   edge: PartEdge; flange: Flange; thickness: number;
   isSketchMode?: boolean; onFaceClick?: (faceId: string) => void;
+  showLines?: boolean;
 }) {
   const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
   const edgesGeo = useMemo(() => {
@@ -64,19 +65,19 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick }: {
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
       </mesh>
-      {edgesGeo && (
+      {showLines && edgesGeo && (
         <lineSegments geometry={edgesGeo}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
-      <Line points={bendLines.start} color="#475569" lineWidth={1.5} />
-      <Line points={bendLines.end} color="#475569" lineWidth={1.5} />
+      {showLines && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
+      {showLines && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
     </group>
   );
 }
 
 function FoldMesh({
-  profile, fold, otherFolds, thickness, isSketchMode, onFaceClick,
+  profile, fold, otherFolds, thickness, isSketchMode, onFaceClick, showLines = true,
 }: {
   profile: Point2D[];
   fold: Fold;
@@ -84,6 +85,7 @@ function FoldMesh({
   thickness: number;
   isSketchMode?: boolean;
   onFaceClick?: (faceId: string) => void;
+  showLines?: boolean;
 }) {
   const result = useMemo(
     () => createFoldMesh(profile, fold, otherFolds, thickness),
@@ -126,7 +128,7 @@ function FoldMesh({
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
-      {/* Tip (flat faces) — flat shading for sharp edges */}
+      {/* Tip (flat faces) */}
       <mesh
         geometry={result.tip}
         onClick={handleClick}
@@ -135,15 +137,15 @@ function FoldMesh({
       >
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
-      {/* Tip edge outlines only (no wireframe on smooth arc) */}
-      {tipEdgesGeo && (
+      {/* Tip edge outlines only when lines are enabled */}
+      {showLines && tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
       {/* Bend zone tangent lines */}
-      {bendLines.start.length > 0 && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
-      {bendLines.end.length > 0 && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
+      {showLines && bendLines.start.length > 0 && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
+      {showLines && bendLines.end.length > 0 && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
     </group>
   );
 }
@@ -311,6 +313,7 @@ function SheetMetalMesh({
   const isSketchMode = interactionMode === 'sketch';
   const isFoldMode = interactionMode === 'fold';
   const isEdgeMode = interactionMode === 'edge';
+  const isViewMode = interactionMode === 'view';
 
   return (
     <group>
@@ -329,10 +332,12 @@ function SheetMetalMesh({
         <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
 
-      {/* Wireframe edges */}
-      <lineSegments geometry={edgesGeometry}>
-        <lineBasicMaterial color="#475569" linewidth={1} />
-      </lineSegments>
+      {/* Wireframe edges — hidden in view mode */}
+      {!isViewMode && (
+        <lineSegments geometry={edgesGeometry}>
+          <lineBasicMaterial color="#475569" linewidth={1} />
+        </lineSegments>
+      )}
 
       {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
       {edges.map((edge) => {
@@ -356,8 +361,8 @@ function SheetMetalMesh({
           : isInnerTip ? '#f59e0b'
           : '#3b82f6';
 
-        // Only show colored edge highlights in edge mode (or fold-line edges always)
-        const showEdgeLine = isEdgeMode || isFoldLine;
+        // Only show colored edge highlights in edge mode
+        const showEdgeLine = isEdgeMode;
 
         return (
           <group key={edge.id}>
@@ -438,6 +443,7 @@ function SheetMetalMesh({
             thickness={thickness}
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
+            showLines={!isViewMode}
           />
         );
       })}
@@ -455,6 +461,7 @@ function SheetMetalMesh({
             thickness={thickness}
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
+            showLines={!isViewMode}
           />
         );
 
