@@ -1181,35 +1181,58 @@ export function createFoldMesh(
   arcGeo.setAttribute('normal', new THREE.Float32BufferAttribute(arcNormals, 3));
   arcGeo.setIndex(arcIdx);
 
-  // ═══════ TIP GEOMETRY — flat shading for sharp edges ═══════
+  // ═══════ TIP GEOMETRY — explicit normals matching arc convention ═══════
   const tipVerts: number[] = [];
+  const tipNormals: number[] = [];
   const tipIdx: number[] = [];
   let tipVi = 0;
-  function addTipV(v: THREE.Vector3): number {
+  function addTipV(v: THREE.Vector3, n: THREE.Vector3): number {
     tipVerts.push(v.x, v.y, v.z);
+    tipNormals.push(n.x, n.y, n.z);
     return tipVi++;
   }
 
-  const tI = locs.map(l => addTipV(tipInner(l.t, l.d)));
-  const tO = locs.map(l => addTipV(tipOuter(l.t, l.d)));
+  // Inner face normal matches arc inner normal at theta=A
+  const nTipInner = U3.clone().multiplyScalar(-sinA)
+    .add(W3.clone().multiplyScalar(cosA));
+  // Outer face normal matches arc outer normal at theta=A
+  const nTipOuter = U3.clone().multiplyScalar(sinA)
+    .add(W3.clone().multiplyScalar(-cosA));
 
+  const tI = locs.map(l => addTipV(tipInner(l.t, l.d), nTipInner));
+  const tO = locs.map(l => addTipV(tipOuter(l.t, l.d), nTipOuter));
+
+  // Inner and outer surface fans
   for (let i = 1; i < tI.length - 1; i++) {
     tipIdx.push(tI[0], tI[i], tI[i + 1]);
     tipIdx.push(tO[0], tO[i + 1], tO[i]);
   }
 
+  // Side strips — separate vertices with per-face side normals
   for (let i = 0; i < locs.length; i++) {
     const j = (i + 1) % locs.length;
     if (locs[i].d < DTOL && locs[j].d < DTOL) continue;
-    tipIdx.push(tI[i], tI[j], tO[j]);
-    tipIdx.push(tI[i], tO[j], tO[i]);
+
+    const pII = tipInner(locs[i].t, locs[i].d);
+    const pIJ = tipInner(locs[j].t, locs[j].d);
+    const pOI = tipOuter(locs[i].t, locs[i].d);
+    const pOJ = tipOuter(locs[j].t, locs[j].d);
+
+    const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+    const e2 = new THREE.Vector3().subVectors(pOI, pII);
+    const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+    const sII = addTipV(pII, sideN);
+    const sIJ = addTipV(pIJ, sideN);
+    const sOJ = addTipV(pOJ, sideN);
+    const sOI = addTipV(pOI, sideN);
+    tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
   }
 
-  const tipIndexed = new THREE.BufferGeometry();
-  tipIndexed.setAttribute('position', new THREE.Float32BufferAttribute(tipVerts, 3));
-  tipIndexed.setIndex(tipIdx);
-  const tipGeo = tipIndexed.toNonIndexed();
-  tipGeo.computeVertexNormals();
+  const tipGeo = new THREE.BufferGeometry();
+  tipGeo.setAttribute('position', new THREE.Float32BufferAttribute(tipVerts, 3));
+  tipGeo.setAttribute('normal', new THREE.Float32BufferAttribute(tipNormals, 3));
+  tipGeo.setIndex(tipIdx);
 
   return { arc: arcGeo, tip: tipGeo };
 }
