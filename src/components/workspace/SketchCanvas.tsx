@@ -1023,6 +1023,7 @@ export function SketchCanvas({
             step="0.1"
             value={precInput1}
             onChange={e => setPrecInput1(e.target.value)}
+            onFocus={e => e.target.select()}
             onKeyDown={e => {
               if (e.key === 'Tab') { e.preventDefault(); precInput2Ref.current?.focus(); }
               if (e.key === 'Enter') handlePrecisionSubmit();
@@ -1038,6 +1039,7 @@ export function SketchCanvas({
             step="0.1"
             value={precInput2}
             onChange={e => setPrecInput2(e.target.value)}
+            onFocus={e => e.target.select()}
             onKeyDown={e => {
               if (e.key === 'Tab') { e.preventDefault(); precInput1Ref.current?.focus(); }
               if (e.key === 'Enter') handlePrecisionSubmit();
