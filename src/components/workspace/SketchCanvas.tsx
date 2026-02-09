@@ -80,14 +80,14 @@ export function SketchCanvas({
   const svgToWorld = useCallback((clientX: number, clientY: number): Point2D => {
     const svg = svgRef.current;
     if (!svg) return { x: 0, y: 0 };
-    const rect = svg.getBoundingClientRect();
-    const scaleX = viewBox.w / rect.width;
-    const scaleY = viewBox.h / rect.height;
-    return {
-      x: viewBox.x + (clientX - rect.left) * scaleX,
-      y: viewBox.y + (clientY - rect.top) * scaleY,
-    };
-  }, [viewBox]);
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const svgPt = pt.matrixTransform(ctm.inverse());
+    return { x: svgPt.x, y: svgPt.y };
+  }, []);
 
   const getSnappedPoint = useCallback((p: Point2D): Point2D => {
     return snapEnabled ? snapToGrid(p, gridSize) : p;
