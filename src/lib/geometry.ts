@@ -688,7 +688,15 @@ export interface FaceSketchRect {
   height: number;
 }
 
-export type FaceSketchEntity = FaceSketchLine | FaceSketchCircle | FaceSketchRect;
+export interface FaceSketchPoint {
+  id: string;
+  type: 'point';
+  position: Point2D;
+}
+
+export type FaceSketchEntity = FaceSketchLine | FaceSketchCircle | FaceSketchRect | FaceSketchPoint;
+
+export type FaceSketchTool = 'select' | 'line' | 'circle' | 'rect' | 'point' | 'move';
 
 export interface FaceSketch {
   faceId: string;

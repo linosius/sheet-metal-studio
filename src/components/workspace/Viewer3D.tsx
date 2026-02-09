@@ -8,7 +8,7 @@ import {
   createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
   computeFoldBendLines,
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
-  FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
+  FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity, FaceSketchTool,
   classifySketchLineAsFold, isEdgeOnFoldLine,
   getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
@@ -920,13 +920,15 @@ interface Viewer3DProps {
   sketchFaceWidth?: number;
   sketchFaceHeight?: number;
   sketchEntities?: FaceSketchEntity[];
-  sketchActiveTool?: 'select' | 'line' | 'circle' | 'rect';
+  sketchActiveTool?: FaceSketchTool;
   sketchGridSize?: number;
   sketchSnapEnabled?: boolean;
   onSketchAddEntity?: (entity: FaceSketchEntity) => void;
+  onSketchUpdateEntity?: (id: string, updates: Partial<FaceSketchEntity>) => void;
   onSketchRemoveEntity?: (id: string) => void;
   sketchSelectedIds?: string[];
-  onSketchSelectEntity?: (id: string) => void;
+  onSketchSelectEntity?: (id: string, multi?: boolean) => void;
+  onSketchDeselectAll?: () => void;
   // Camera control
   cameraApiRef?: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void } | null>;
 }
@@ -939,7 +941,7 @@ export function Viewer3D({
   sketchPlaneActive, sketchFaceId, sketchFaceOrigin,
   sketchFaceWidth, sketchFaceHeight,
   sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
-  onSketchAddEntity, onSketchRemoveEntity, sketchSelectedIds, onSketchSelectEntity,
+  onSketchAddEntity, onSketchUpdateEntity, onSketchRemoveEntity, sketchSelectedIds, onSketchSelectEntity, onSketchDeselectAll,
   cameraApiRef,
 }: Viewer3DProps) {
   const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>({ reset: () => {}, setFrontalView: () => {}, setViewToFace: () => {} });
@@ -1032,9 +1034,11 @@ export function Viewer3D({
                   gridSize={sketchGridSize || 5}
                   snapEnabled={sketchSnapEnabled ?? true}
                   onAddEntity={onSketchAddEntity}
+                  onUpdateEntity={onSketchUpdateEntity}
                   onRemoveEntity={onSketchRemoveEntity}
                   selectedIds={sketchSelectedIds || []}
                   onSelectEntity={onSketchSelectEntity}
+                  onDeselectAll={onSketchDeselectAll || (() => {})}
                 />
               </group>
             );
@@ -1094,9 +1098,11 @@ export function Viewer3D({
                   gridSize={sketchGridSize || 5}
                   snapEnabled={sketchSnapEnabled ?? true}
                   onAddEntity={onSketchAddEntity}
+                  onUpdateEntity={onSketchUpdateEntity}
                   onRemoveEntity={onSketchRemoveEntity}
                   selectedIds={sketchSelectedIds || []}
                   onSelectEntity={onSketchSelectEntity}
+                  onDeselectAll={onSketchDeselectAll || (() => {})}
                 />
               </group>
             );
@@ -1113,9 +1119,11 @@ export function Viewer3D({
               gridSize={sketchGridSize || 5}
               snapEnabled={sketchSnapEnabled ?? true}
               onAddEntity={onSketchAddEntity}
+              onUpdateEntity={onSketchUpdateEntity}
               onRemoveEntity={onSketchRemoveEntity}
               selectedIds={sketchSelectedIds || []}
               onSelectEntity={onSketchSelectEntity}
+              onDeselectAll={onSketchDeselectAll || (() => {})}
             />
           );
         })()}
