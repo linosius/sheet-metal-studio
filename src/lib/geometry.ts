@@ -1417,29 +1417,35 @@ export function createFoldMesh(
   const R_neutral = R + K_FACTOR * TH;
   const arcHoleLocs: Point2D[][] = [];
   if (movingCutouts && movingCutouts.length > 0) {
+    console.log('[ARC CUTOUT DEBUG] movingCutouts count:', movingCutouts.length, 'R_neutral:', R_neutral, 'A:', A, 'tMin:', tMin, 'tMax:', tMax);
     for (const cutPoly of movingCutouts) {
       const cutTTheta: Point2D[] = cutPoly.map(p => {
         const loc = toLocal(p);
-        const theta = loc.d / R_neutral; // Don't clamp — let clipPolygonByLine handle arc boundaries
+        const theta = loc.d / R_neutral;
         return { x: loc.t, y: theta };
       });
       if (cutTTheta.length < 3) continue;
-      // Check if any part of the cutout overlaps the arc zone [0, A]
       const minTheta = Math.min(...cutTTheta.map(p => p.y));
       const maxTheta = Math.max(...cutTTheta.map(p => p.y));
+      console.log('[ARC CUTOUT DEBUG] cutTTheta minTheta:', minTheta, 'maxTheta:', maxTheta, 'A:', A, 'points:', cutTTheta.length);
       const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
-      if (!hasArcPart) continue;
-      // Clip the cutout polygon to the arc region
+      if (!hasArcPart) {
+        console.log('[ARC CUTOUT DEBUG] SKIPPED — no arc overlap');
+        continue;
+      }
       let clippedArcCut = [...cutTTheta];
-      // Clip to θ >= 0
       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
-      // Clip to θ <= A
+      console.log('[ARC CUTOUT DEBUG] after clip θ>=0:', clippedArcCut.length);
       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
-      // Clip to t >= tMin (approximately)
+      console.log('[ARC CUTOUT DEBUG] after clip θ<=A:', clippedArcCut.length);
       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
-      // Clip to t <= tMax (approximately)
+      console.log('[ARC CUTOUT DEBUG] after clip t>=tMin:', clippedArcCut.length);
       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
-      if (clippedArcCut.length < 3) continue;
+      console.log('[ARC CUTOUT DEBUG] after clip t<=tMax:', clippedArcCut.length, 'clipped:', JSON.stringify(clippedArcCut.slice(0, 4)));
+      if (clippedArcCut.length < 3) {
+        console.log('[ARC CUTOUT DEBUG] SKIPPED — clipped to <3 points');
+        continue;
+      }
 
       const holePath = new THREE.Path();
       holePath.moveTo(clippedArcCut[0].x, clippedArcCut[0].y);
@@ -1449,6 +1455,7 @@ export function createFoldMesh(
       holePath.closePath();
       arcShape.holes.push(holePath);
       arcHoleLocs.push(clippedArcCut);
+      console.log('[ARC CUTOUT DEBUG] ADDED hole with', clippedArcCut.length, 'points');
     }
   }
 
