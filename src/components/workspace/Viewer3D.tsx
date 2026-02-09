@@ -12,7 +12,7 @@ import {
   classifySketchLineAsFold, isEdgeOnFoldLine,
   getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
-  getFaceDimensions,
+  getFaceDimensions, FlangeTipClipLine,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -41,9 +41,22 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
 }) {
   const isActiveSketch = activeSketchFaceId === `flange_face_${flange.id}`;
   const [hovered, setHovered] = useState(false);
-  // Note: flange face clipping for sub-folds is intentionally disabled.
-  // The sub-fold mesh bends the moving region away, so the overlap is minimal.
-  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
+
+  // Build clip lines from child folds for tip clipping
+  const clipLines = useMemo((): FlangeTipClipLine[] | undefined => {
+    if (!childFolds || childFolds.length === 0) return undefined;
+    const edgeLen = edge.start.distanceTo(edge.end);
+    return childFolds.map(cf => {
+      const normal = getFoldNormal(cf, edgeLen, flange.height);
+      return {
+        lineStart: cf.lineStart,
+        lineEnd: cf.lineEnd,
+        normal,
+      };
+    });
+  }, [childFolds, edge, flange.height]);
+
+  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness, clipLines), [edge, flange, thickness, clipLines]);
   const edgesGeo = useMemo(() => {
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
       return null;
@@ -88,9 +101,6 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
         <meshStandardMaterial
           color={isSketchMode && hovered ? '#93c5fd' : '#bcc2c8'}
           metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
-          polygonOffset={!!(childFolds && childFolds.length > 0)}
-          polygonOffsetFactor={1}
-          polygonOffsetUnits={1}
         />
       </mesh>
       {showLines && edgesGeo && (
