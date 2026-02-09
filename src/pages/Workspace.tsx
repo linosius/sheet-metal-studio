@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine, Undo2, Redo2 } from 'lucide-react';
 import { ExportPanel } from '@/components/workspace/ExportPanel';
@@ -45,6 +45,7 @@ export default function Workspace() {
   const [sketchTool, setSketchTool] = useState<'select' | 'line' | 'circle' | 'rect'>('line');
   const [sketchEntities, setSketchEntities] = useState<FaceSketchEntity[]>([]);
   const [sketchSelectedIds, setSketchSelectedIds] = useState<string[]>([]);
+  const cameraApiRef = useRef<{ reset: () => void; setFrontalView: () => void } | null>(null);
 
   const canConvert = useMemo(() => {
     return extractProfile(sketch.entities) !== null;
@@ -543,7 +544,7 @@ export default function Workspace() {
               <Button
                 variant={subMode === 'sketch' ? 'default' : 'outline'}
                 size="sm" className="h-7 text-xs gap-1"
-                onClick={() => { setSubMode('sketch'); setSelectedEdgeId(null); setSelectedSketchLineId(null); }}
+                onClick={() => { setSubMode('sketch'); setSelectedEdgeId(null); setSelectedSketchLineId(null); cameraApiRef.current?.setFrontalView(); }}
               >
                 <PenLine className="h-3 w-3" />
                 2D Sketch
@@ -609,6 +610,7 @@ export default function Workspace() {
               onSketchRemoveEntity={handleSketchRemoveEntity}
               sketchSelectedIds={sketchSelectedIds}
               onSketchSelectEntity={handleSketchSelectEntity}
+              cameraApiRef={cameraApiRef}
             >
               {/* Sketch toolbar overlay */}
               {activeFaceSketch && sketchFaceInfo && (
