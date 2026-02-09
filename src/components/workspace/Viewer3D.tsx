@@ -273,17 +273,44 @@ function SheetMetalMesh({
 
   const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
 
-  const foldLineEdgeIds = useMemo(() => {
+  const nonSelectableEdgeIds = useMemo(() => {
     const ids = new Set<string>();
+    // Mark explicit fold edges
     folds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
-    // Also mark fixed profile edges that geometrically correspond to fold lines
+    // Mark fixed profile edges that geometrically correspond to fold lines
     for (const edge of edges) {
       if (isEdgeOnFoldLine(edge, folds, profile)) {
         ids.add(edge.id);
       }
     }
+    // Mark fold side edges (thickness-length, not useful for flanges)
+    for (const edge of edges) {
+      if (edge.id.includes('_side_s_fold_') || edge.id.includes('_side_e_fold_')) {
+        ids.add(edge.id);
+      }
+    }
+    // Mark edges that are collinear with any fold's inner edge (clipped profile edges at fold boundaries)
+    for (const fold of folds) {
+      const foldEdge = computeFoldEdge(profile, thickness, fold);
+      const foldDir = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
+      for (const edge of edges) {
+        // Skip already marked edges
+        if (ids.has(edge.id)) continue;
+        // Check if edge is collinear with fold edge (same direction, same line)
+        const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
+        const cross = Math.abs(foldDir.x * edgeDir.y - foldDir.y * edgeDir.x);
+        if (cross > 0.05) continue; // not parallel
+        // Check if edge midpoint lies on the fold line
+        const mid = edge.start.clone().add(edge.end).multiplyScalar(0.5);
+        const toMid = new THREE.Vector3().subVectors(mid, foldEdge.start);
+        const perpDist = Math.abs(toMid.x * (-foldDir.y) + toMid.y * foldDir.x);
+        if (perpDist < 1.5) {
+          ids.add(edge.id);
+        }
+      }
+    }
     return ids;
-  }, [folds, edges, profile]);
+  }, [folds, edges, profile, thickness]);
 
   // Only render base face entities in 3D (fold face entities need separate transform)
   const allEntities = useMemo(() => {
@@ -343,7 +370,7 @@ function SheetMetalMesh({
       {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
-        const isFoldLine = foldLineEdgeIds.has(edge.id);
+        const isFoldLine = nonSelectableEdgeIds.has(edge.id);
         const edgeMid = new THREE.Vector3(
           (edge.start.x + edge.end.x) / 2,
           (edge.start.y + edge.end.y) / 2,
