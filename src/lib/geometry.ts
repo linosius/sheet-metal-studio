@@ -1447,6 +1447,14 @@ export function createFoldMesh(
         continue;
       }
 
+      // Ensure hole winding is CW (opposite of outer shape which is CCW)
+      // THREE.ShapeUtils.isClockWise uses signed area
+      const isHoleCW = THREE.ShapeUtils.isClockWise(clippedArcCut.map(p => new THREE.Vector2(p.x, p.y)));
+      if (!isHoleCW) {
+        clippedArcCut = clippedArcCut.slice().reverse();
+      }
+      console.log('[ARC CUTOUT DEBUG] hole CW?', isHoleCW, 'reversed?', !isHoleCW);
+
       const holePath = new THREE.Path();
       holePath.moveTo(clippedArcCut[0].x, clippedArcCut[0].y);
       for (let i = 1; i < clippedArcCut.length; i++) {
