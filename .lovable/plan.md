@@ -1,64 +1,95 @@
 
-# Fix Unfold Flat Pattern and 3D Fold Rendering
 
-## Problem Summary
+# Fix Arc-to-Tip Tangency: Explicit Tip Normals
 
-Two visual bugs when folding a diagonal line on a 200x100mm base face:
+## Problem
 
-1. **Unfold shows wrong dimensions (204.4 x 105.x instead of 200x100)** -- A displaced green triangle is created as a separate region, extending beyond the original face. Inventor's flat pattern is simply the original rectangle with a dashed bend line.
+The visible "kink" at the junction between the bend arc and the flat tip (flange) is a **shading discontinuity caused by mismatched normals**, not a geometric error. The positions are correct -- the user confirmed that positions and orientation are right.
 
-2. **3D bend looks unrealistic compared to Inventor** -- Visible gaps and shading inconsistencies at the fold junction due to Z-offsets and mismatched material settings.
+Root cause in `createFoldMesh` (geometry.ts, lines 1184-1214):
 
----
+1. The **arc** uses explicit per-vertex smooth normals computed from the cylindrical surface formula
+2. The **tip** uses `toNonIndexed()` + `computeVertexNormals()`, which produces flat per-face normals from triangle geometry
+3. At the junction edge (arc at theta=A meets tip at d=0), these normals **disagree in direction**, creating a visible lighting seam
+4. The `toNonIndexed()` call means every triangle gets unique vertices, so `computeVertexNormals()` just gives face normals (effectively flat shading regardless of the material setting)
+
+**Why the normals disagree:** The (T3, U3, W3) basis is left-handed for "up" folds (T3 x U3 = -W3), which flips the geometric face normal relative to the arc's inward-pointing normal convention. The arc inner normal at theta=A is `-sin(A)*U3 + cos(A)*W3`, while `computeVertexNormals()` produces `+sin(A)*U3 - cos(A)*W3` -- exactly opposite.
+
+## Fix
+
+Replace the auto-computed tip normals with explicit normals that match the arc convention:
+
+### File: `src/lib/geometry.ts` (lines 1184-1214)
+
+**Change `addTipV` to accept an explicit normal:**
+
+```typescript
+const tipNormals: number[] = [];
+function addTipV(v: THREE.Vector3, n: THREE.Vector3): number {
+  tipVerts.push(v.x, v.y, v.z);
+  tipNormals.push(n.x, n.y, n.z);
+  return tipVi++;
+}
+```
+
+**Compute the tip surface normals from the arc formula at theta=A:**
+
+```typescript
+// Inner face normal matches arc inner normal at theta=A
+const nTipInner = U3.clone().multiplyScalar(-sinA)
+  .add(W3.clone().multiplyScalar(cosA));
+// Outer face normal matches arc outer normal at theta=A
+const nTipOuter = U3.clone().multiplyScalar(sinA)
+  .add(W3.clone().multiplyScalar(-cosA));
+```
+
+**Use these normals when creating tip vertices:**
+
+- Inner surface vertices (tI array): use `nTipInner`
+- Outer surface vertices (tO array): use `nTipOuter`
+- Side strip vertices: create NEW vertices with per-face normals computed from triangle edge cross products (because side surfaces are at different angles than inner/outer)
+
+**Replace the final geometry construction:**
+
+Remove `toNonIndexed()` and `computeVertexNormals()`. Instead build the geometry directly with the explicit position and normal arrays:
+
+```typescript
+const tipGeo = new THREE.BufferGeometry();
+tipGeo.setAttribute('position',
+  new THREE.Float32BufferAttribute(tipVerts, 3));
+tipGeo.setAttribute('normal',
+  new THREE.Float32BufferAttribute(tipNormals, 3));
+tipGeo.setIndex(tipIdx);
+```
+
+**Side strip handling:** The current code reuses inner/outer vertex indices for side strips, but those vertices now carry inner/outer face normals. Side strips need their own vertices with side-face normals. For each side quad (lines 1201-1206):
+
+```typescript
+// Compute side face normal from edge cross product
+const pII = tipInner(locs[i].t, locs[i].d);
+const pIJ = tipInner(locs[j].t, locs[j].d);
+const pOI = tipOuter(locs[i].t, locs[i].d);
+const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+const e2 = new THREE.Vector3().subVectors(pOI, pII);
+const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+// Add NEW vertices with side normal (don't reuse tI/tO indices)
+const sII = addTipV(pII, sideN);
+const sIJ = addTipV(pIJ, sideN);
+const sOJ = addTipV(tipOuter(locs[j].t, locs[j].d), sideN);
+const sOI = addTipV(pOI, sideN);
+tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+```
 
 ## What Changes Visually
 
-- The unfold view will show the original 200x100mm rectangle with bend lines drawn ON it -- no extra displaced regions, no size change
-- The 3D fold will look seamless with the base face -- no visible gap or shading mismatch at the junction
-
----
-
-## Technical Changes
-
-### File 1: `src/lib/unfold.ts` -- Fix flat pattern for folds
-
-The fold processing loop (lines 82-121) currently:
-1. Clips the moving polygon from the profile
-2. Shifts it outward by Bend Allowance (BA)
-3. Adds it as a separate `flange`-type region
-
-This is correct for edge flanges (adding new material) but wrong for folds (bending existing material).
-
-**Fix:** Remove the displaced region creation for folds entirely. Keep only the bend line annotations:
-
-- Remove lines 91-107 (movingPoly clipping, BA shift, and `regions.push`)
-- Change bend line positions to use the ORIGINAL drawn fold line position (not shifted by foldLocation inner edge offset), since the flat pattern represents the original face
-- Keep two bend lines (marking the bend zone width = BA) to match Inventor's convention
-- The base region at line 52 already uses the full original profile -- this stays unchanged
-- Overall dimensions will be exactly the original face size (200 x 100)
-
-### File 2: `src/lib/geometry.ts` -- Remove micro-gap in fold mesh
-
-In `createFoldMesh` (line 1036), `EPS = 0.01` adds a small Z-offset to all arc and tip vertices to prevent z-fighting with the base face. This creates a visible micro-gap between the base face surface and the fold arc start.
-
-**Fix:** Set `EPS = 0` (or remove it entirely). Z-fighting is not an issue here because the fold arc starts at the fold line boundary, not overlapping the base face surface.
-
-### File 3: `src/components/workspace/Viewer3D.tsx` -- Match material settings
-
-The fold tip mesh (line 136) uses `flatShading` while the base face (line 329) does not. This creates inconsistent lighting at the junction.
-
-**Fix:** Remove `flatShading` from the fold tip material to match the base face appearance. The smooth shading will make the transition between base face and fold look seamless, matching Inventor's rendering.
-
----
+- The shading transition from the cylindrical arc surface to the flat tip surface becomes smooth and continuous -- no visible "kink" line at the junction
+- Side edges of the tip retain sharp creases (correct -- they ARE geometric edges)
+- Matches Inventor's seamless arc-to-flange rendering
 
 ## Files Modified
 
-1. `src/lib/unfold.ts` -- Remove displaced fold regions; keep only bend lines at original fold line positions
-2. `src/lib/geometry.ts` -- Remove EPS offset in createFoldMesh for seamless junction
-3. `src/components/workspace/Viewer3D.tsx` -- Remove flatShading from fold tip material
+1. `src/lib/geometry.ts` -- Tip geometry section of `createFoldMesh` only (lines 1184-1214)
 
-## Expected Result
+No other files are changed. The arc geometry, materials, and transform logic are all correct and untouched.
 
-- Unfold shows exactly 200.0 x 100.0 mm with two dashed bend lines along the diagonal
-- 3D fold transitions seamlessly from base face to bend arc to folded flap
-- Matches Inventor behavior for both views
