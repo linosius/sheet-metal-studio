@@ -29,6 +29,7 @@ interface SheetMetalMeshProps {
   selectedSketchLineId: string | null;
   onSketchLineClick?: (lineId: string) => void;
   activeSketchFaceId?: string | null;
+  cutouts?: { center: Point2D; radius: number }[];
 }
 
 const noopRaycast = () => {};
@@ -318,10 +319,10 @@ function SheetMetalMesh({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds, interactionMode, onFaceClick,
   faceSketches, selectedSketchLineId, onSketchLineClick,
-  activeSketchFaceId,
+  activeSketchFaceId, cutouts,
 }: SheetMetalMeshProps) {
   const fixedProfile = useMemo(() => getFixedProfile(profile, folds, thickness), [profile, folds, thickness]);
-  const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness), [fixedProfile, thickness]);
+  const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness, cutouts), [fixedProfile, thickness, cutouts]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
@@ -911,6 +912,7 @@ interface Viewer3DProps {
   selectedSketchLineId?: string | null;
   onSketchLineClick?: (lineId: string) => void;
   children?: React.ReactNode;
+  cutouts?: { center: Point2D; radius: number }[];
   // Sketch plane props
   sketchPlaneActive?: boolean;
   sketchFaceId?: string | null;
@@ -933,7 +935,7 @@ export function Viewer3D({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds = [], interactionMode = 'view', onFaceClick,
   faceSketches = [], selectedSketchLineId = null, onSketchLineClick,
-  children,
+  children, cutouts,
   sketchPlaneActive, sketchFaceId, sketchFaceOrigin,
   sketchFaceWidth, sketchFaceHeight,
   sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
@@ -987,6 +989,7 @@ export function Viewer3D({
           selectedSketchLineId={selectedSketchLineId}
           onSketchLineClick={onSketchLineClick}
           activeSketchFaceId={sketchPlaneActive ? sketchFaceId : null}
+          cutouts={cutouts}
         />
 
         {/* Sketch plane when active */}

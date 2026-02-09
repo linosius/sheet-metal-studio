@@ -129,14 +129,31 @@ export function profileToShape(profile: Point2D[]): THREE.Shape {
   return shape;
 }
 
+/** A circular cutout in the base face */
+export interface ProfileCutout {
+  center: Point2D;
+  radius: number;
+}
+
 /**
- * Create an extruded mesh from a profile and thickness.
+ * Create an extruded mesh from a profile and thickness, with optional circular cutouts.
  */
 export function createBaseFaceMesh(
   profile: Point2D[],
-  thickness: number
+  thickness: number,
+  cutouts?: ProfileCutout[],
 ): THREE.BufferGeometry {
   const shape = profileToShape(profile);
+
+  // Add circular holes for each cutout
+  if (cutouts && cutouts.length > 0) {
+    for (const cutout of cutouts) {
+      const holePath = new THREE.Path();
+      holePath.absarc(cutout.center.x, cutout.center.y, cutout.radius, 0, Math.PI * 2, true);
+      shape.holes.push(holePath);
+    }
+  }
+
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth: thickness,
     bevelEnabled: false,
