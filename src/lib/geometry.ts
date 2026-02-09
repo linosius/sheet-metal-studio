@@ -424,33 +424,41 @@ export function getAllSelectableEdges(
   return Array.from(edgeMap.values());
 }
 
+/**
+ * Data describing a child fold line for clipping the flange tip.
+ * Coordinates are in flange-face-local space:
+ *   x = along parent edge (0..edgeLen), y = along extension (0..flangeHeight)
+ */
+export interface FlangeTipClipLine {
+  lineStart: Point2D;
+  lineEnd: Point2D;
+  /** Normal pointing toward the moving (removed) side */
+  normal: Point2D;
+}
+
 export function createFlangeMesh(
   edge: PartEdge,
   flange: Flange,
   thickness: number,
-  clipHeightStart?: number,
-  clipHeightEnd?: number,
+  childClipLines?: FlangeTipClipLine[],
 ): THREE.BufferGeometry {
   const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
   const R = flange.bendRadius;
   const H = flange.height;
-  const HS = clipHeightStart ?? H;
-  const HE = clipHeightEnd ?? H;
 
-  const uDir = edge.normal.clone().normalize();           // outward from face
-  const wDir = edge.faceNormal.clone().multiplyScalar(dirSign); // perpendicular to face
+  const edgeLen = edge.start.distanceTo(edge.end);
+  const uDir = edge.normal.clone().normalize();
+  const wDir = edge.faceNormal.clone().multiplyScalar(dirSign);
+  const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
 
   const BEND_SEGMENTS = 12;
-  // Small offset to prevent z-fighting between flange base cap and base face edge
   const W_EPSILON = 0.01;
 
   // ---------- Build 2D cross-section profile (u, w) ----------
-  // Each entry stores inner & outer positions in (u,w) space relative to the edge point.
   interface CrossSection { iu: number; iw: number; ou: number; ow: number }
   const arcProfile: CrossSection[] = [];
 
-  // 1. Bend arc (same at both edge ends)
   for (let i = 0; i <= BEND_SEGMENTS; i++) {
     const t = (i / BEND_SEGMENTS) * bendAngleRad;
     const sinT = Math.sin(t);
@@ -462,10 +470,8 @@ export function createFlangeMesh(
     arcProfile.push({ iu, iw, ou, ow });
   }
 
-  // 2. Flat flange tip — varies at start vs end for sub-fold clipping
-  const arcEndT = bendAngleRad;
-  const sinA = Math.sin(arcEndT);
-  const cosA = Math.cos(arcEndT);
+  const sinA = Math.sin(bendAngleRad);
+  const cosA = Math.cos(bendAngleRad);
   const arcEndIU = R * sinA;
   const arcEndIW = R * (1 - cosA);
   const tanU = cosA;
@@ -473,38 +479,43 @@ export function createFlangeMesh(
   const perpU = sinA;
   const perpW = -cosA;
 
-  function tipCS(h: number): CrossSection {
-    return {
-      iu: arcEndIU + h * tanU,
-      iw: arcEndIW + h * tanW + W_EPSILON,
-      ou: arcEndIU + h * tanU + thickness * perpU,
-      ow: arcEndIW + h * tanW + thickness * perpW + W_EPSILON,
-    };
-  }
-  const tipStart = tipCS(HS);
-  const tipEnd = tipCS(HE);
+  // ---------- Build clipped tip polygon in face-local 2D ----------
+  // Face-local: x = along edge (0..edgeLen), y = along extension (0..H)
+  let tipPoly: Point2D[] = [
+    { x: 0, y: 0 },
+    { x: edgeLen, y: 0 },
+    { x: edgeLen, y: H },
+    { x: 0, y: H },
+  ];
 
-  // ---------- Convert to 3D vertices ----------
+  if (childClipLines && childClipLines.length > 0) {
+    for (const cl of childClipLines) {
+      // clipPolygonByLine keeps the side where dot(p - linePoint, normal) <= 0
+      // We want to keep the fixed side (opposite to moving), so use the normal as-is
+      // (normal points toward moving side = the side to remove)
+      tipPoly = clipPolygonByLine(tipPoly, cl.lineStart, cl.normal);
+    }
+  }
+
+  // ---------- Helper: convert face-local tip point to 3D ----------
+  // Face-local (fx, fy) → cross-section (u, w) for inner and outer surfaces
+  function tipPointTo3D(fx: number, fy: number, surface: 'inner' | 'outer'): THREE.Vector3 {
+    const baseU = arcEndIU + fy * tanU;
+    const baseW = arcEndIW + fy * tanW + W_EPSILON;
+    const u = surface === 'inner' ? baseU : baseU + thickness * perpU;
+    const w = surface === 'inner' ? baseW : baseW + thickness * perpW + W_EPSILON;
+    // Position along edge direction
+    const base = edge.start.clone().add(edgeDir.clone().multiplyScalar(fx));
+    return base.add(uDir.clone().multiplyScalar(u)).add(wDir.clone().multiplyScalar(w));
+  }
+
+  // ---------- Build arc geometry (same as before, using full edge length) ----------
   const verts: number[] = [];
-  // Arc vertices (same at both edge ends)
   for (const p of arcProfile) {
     const is = edge.start.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
     const ie = edge.end.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
     const os = edge.start.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
     const oe = edge.end.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
-    verts.push(
-      is.x, is.y, is.z,   // idx i*4+0
-      ie.x, ie.y, ie.z,   // idx i*4+1
-      os.x, os.y, os.z,   // idx i*4+2
-      oe.x, oe.y, oe.z,   // idx i*4+3
-    );
-  }
-  // Tip vertices (variable height at start vs end)
-  {
-    const is = edge.start.clone().add(uDir.clone().multiplyScalar(tipStart.iu)).add(wDir.clone().multiplyScalar(tipStart.iw));
-    const ie = edge.end.clone().add(uDir.clone().multiplyScalar(tipEnd.iu)).add(wDir.clone().multiplyScalar(tipEnd.iw));
-    const os = edge.start.clone().add(uDir.clone().multiplyScalar(tipStart.ou)).add(wDir.clone().multiplyScalar(tipStart.ow));
-    const oe = edge.end.clone().add(uDir.clone().multiplyScalar(tipEnd.ou)).add(wDir.clone().multiplyScalar(tipEnd.ow));
     verts.push(
       is.x, is.y, is.z,
       ie.x, ie.y, ie.z,
@@ -513,35 +524,93 @@ export function createFlangeMesh(
     );
   }
 
-  // ---------- Build index buffer ----------
   const indices: number[] = [];
-  const N = arcProfile.length + 1;
-  for (let i = 0; i < N - 1; i++) {
+  const arcN = arcProfile.length;
+
+  // Arc quad strips (inner, outer, left side, right side)
+  for (let i = 0; i < arcN - 1; i++) {
     const c = i * 4;
     const n = (i + 1) * 4;
-
-    // Inner surface
     indices.push(c, n, n + 1, c, n + 1, c + 1);
-    // Outer surface
     indices.push(c + 2, c + 3, n + 3, c + 2, n + 3, n + 2);
-    // Left side (edge start)
     indices.push(c, c + 2, n + 2, c, n + 2, n);
-    // Right side (edge end)
     indices.push(c + 1, n + 1, n + 3, c + 1, n + 3, c + 3);
   }
 
-  // Tip cap
-  const last = (N - 1) * 4;
-  indices.push(last, last + 1, last + 3, last, last + 3, last + 2);
-  // Base cap (at edge, first profile point)
+  // Base cap
   indices.push(0, 3, 1, 0, 2, 3);
+
+  // ---------- Build tip from clipped polygon ----------
+  if (tipPoly.length >= 3) {
+    // Add tip polygon vertices (inner surface, then outer surface)
+    const tipBaseIdx = verts.length / 3;
+    for (const p of tipPoly) {
+      const v = tipPointTo3D(p.x, p.y, 'inner');
+      verts.push(v.x, v.y, v.z);
+    }
+    const tipOuterBaseIdx = verts.length / 3;
+    for (const p of tipPoly) {
+      const v = tipPointTo3D(p.x, p.y, 'outer');
+      verts.push(v.x, v.y, v.z);
+    }
+
+    const nPoly = tipPoly.length;
+
+    // Triangulate inner face (fan from vertex 0)
+    for (let i = 1; i < nPoly - 1; i++) {
+      indices.push(tipBaseIdx, tipBaseIdx + i, tipBaseIdx + i + 1);
+    }
+    // Triangulate outer face (reverse winding)
+    for (let i = 1; i < nPoly - 1; i++) {
+      indices.push(tipOuterBaseIdx, tipOuterBaseIdx + i + 1, tipOuterBaseIdx + i);
+    }
+    // Side walls (connect inner and outer edges of the tip polygon)
+    for (let i = 0; i < nPoly; i++) {
+      const j = (i + 1) % nPoly;
+      const ii = tipBaseIdx + i;
+      const ij = tipBaseIdx + j;
+      const oi = tipOuterBaseIdx + i;
+      const oj = tipOuterBaseIdx + j;
+      indices.push(ii, ij, oj, ii, oj, oi);
+    }
+
+    // Connect arc end to tip polygon bottom edge (y=0 edge of the tip)
+    // The arc's last ring connects to the tip at y=0. We need to bridge
+    // the last arc ring to the tip polygon's bottom boundary.
+    // The last arc ring is at index (arcN-1)*4, vertices: [innerStart, innerEnd, outerStart, outerEnd]
+    const lastArc = (arcN - 1) * 4;
+    // Find tip polygon vertices that lie on y=0 (the bottom edge connecting to the arc)
+    // These should be the first two vertices of the unclipped rectangle, but after clipping
+    // we need to find them. For the connection, we use the full-width arc end ring.
+    // The inner surface quad connecting arc end to tip bottom:
+    // Arc end inner: lastArc+0 (start), lastArc+1 (end)
+    // Tip inner bottom-left corner should be at (0, 0) and bottom-right at (edgeLen, 0)
+    // Find indices in tipPoly closest to y=0
+    const bottomTipInnerIndices: number[] = [];
+    for (let i = 0; i < nPoly; i++) {
+      if (Math.abs(tipPoly[i].y) < 0.01) {
+        bottomTipInnerIndices.push(i);
+      }
+    }
+    // If the bottom edge is intact (2 vertices at y≈0), connect arc to tip
+    if (bottomTipInnerIndices.length >= 2) {
+      // Sort by x to get left-to-right order
+      bottomTipInnerIndices.sort((a, b) => tipPoly[a].x - tipPoly[b].x);
+      const bL = tipBaseIdx + bottomTipInnerIndices[0];
+      const bR = tipBaseIdx + bottomTipInnerIndices[bottomTipInnerIndices.length - 1];
+      const obL = tipOuterBaseIdx + bottomTipInnerIndices[0];
+      const obR = tipOuterBaseIdx + bottomTipInnerIndices[bottomTipInnerIndices.length - 1];
+      // Inner surface: arc end → tip bottom
+      indices.push(lastArc, bL, bR, lastArc, bR, lastArc + 1);
+      // Outer surface: arc end → tip bottom
+      indices.push(lastArc + 2, lastArc + 3, obR, lastArc + 2, obR, obL);
+    }
+  }
 
   const indexed = new THREE.BufferGeometry();
   indexed.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
   indexed.setIndex(indices);
 
-  // Convert to non-indexed so each face gets its own vertices,
-  // then recompute normals — gives clean flat shading per face
   const geometry = indexed.toNonIndexed();
   geometry.computeVertexNormals();
   return geometry;
