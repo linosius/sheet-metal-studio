@@ -549,11 +549,28 @@ function SheetMetalMesh({
             <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
               {fs.entities.map(ent => {
                 if (ent.type === 'line') {
+                  const s = new THREE.Vector3(ent.start.x, ent.start.y, 0.02);
+                  const e = new THREE.Vector3(ent.end.x, ent.end.y, 0.02);
+                  const mid = s.clone().add(e).multiplyScalar(0.5);
+                  const dir = new THREE.Vector3().subVectors(e, s).normalize();
+                  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+                  const len = s.distanceTo(e);
+                  const hasFoldOnIt = folds.some(f => f.sketchLineId === ent.id);
+                  const color = hasFoldOnIt ? '#22c55e' : '#ef4444';
                   return (
-                    <Line key={ent.id} points={[
-                      [ent.start.x, ent.start.y, 0.02],
-                      [ent.end.x, ent.end.y, 0.02],
-                    ]} color="#ef4444" lineWidth={2} dashed dashSize={2} gapSize={1} />
+                    <group key={ent.id}>
+                      <Line points={[[ent.start.x, ent.start.y, 0.02], [ent.end.x, ent.end.y, 0.02]]}
+                        color={color} lineWidth={2} dashed dashSize={2} gapSize={1} />
+                      {isFoldMode && !hasFoldOnIt && (
+                        <mesh position={mid} quaternion={quat}
+                          onClick={(ev) => { ev.stopPropagation(); onSketchLineClick?.(ent.id); }}
+                          onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
+                          onPointerOut={() => { document.body.style.cursor = 'default'; }}>
+                          <boxGeometry args={[len, 4, 4]} />
+                          <meshBasicMaterial transparent opacity={0} />
+                        </mesh>
+                      )}
+                    </group>
                   );
                 }
                 if (ent.type === 'circle') {
@@ -620,11 +637,28 @@ function SheetMetalMesh({
             <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
               {fs.entities.map(ent => {
                 if (ent.type === 'line') {
+                  const s = new THREE.Vector3(ent.start.x, ent.start.y, 0.02);
+                  const e = new THREE.Vector3(ent.end.x, ent.end.y, 0.02);
+                  const mid = s.clone().add(e).multiplyScalar(0.5);
+                  const dir = new THREE.Vector3().subVectors(e, s).normalize();
+                  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+                  const len = s.distanceTo(e);
+                  const hasFoldOnIt = folds.some(f => f.sketchLineId === ent.id);
+                  const color = hasFoldOnIt ? '#22c55e' : '#ef4444';
                   return (
-                    <Line key={ent.id} points={[
-                      [ent.start.x, ent.start.y, 0.02],
-                      [ent.end.x, ent.end.y, 0.02],
-                    ]} color="#ef4444" lineWidth={2} dashed dashSize={2} gapSize={1} />
+                    <group key={ent.id}>
+                      <Line points={[[ent.start.x, ent.start.y, 0.02], [ent.end.x, ent.end.y, 0.02]]}
+                        color={color} lineWidth={2} dashed dashSize={2} gapSize={1} />
+                      {isFoldMode && !hasFoldOnIt && (
+                        <mesh position={mid} quaternion={quat}
+                          onClick={(ev) => { ev.stopPropagation(); onSketchLineClick?.(ent.id); }}
+                          onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
+                          onPointerOut={() => { document.body.style.cursor = 'default'; }}>
+                          <boxGeometry args={[len, 4, 4]} />
+                          <meshBasicMaterial transparent opacity={0} />
+                        </mesh>
+                      )}
+                    </group>
                   );
                 }
                 if (ent.type === 'circle') {
