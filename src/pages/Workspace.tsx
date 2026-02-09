@@ -656,7 +656,7 @@ export default function Workspace() {
 
           {/* 3D Viewer with history sidebar */}
           {is3DStep && profile && (
-            <div className="flex-1 flex overflow-hidden">
+            <div className="flex-1 flex min-h-0 overflow-hidden">
               {/* Left history panel */}
               {history.entries.length > 1 && (
                 <div className="w-48 border-r bg-card/50 flex flex-col shrink-0">
@@ -673,7 +673,7 @@ export default function Workspace() {
                   </div>
                 </div>
               )}
-              <div className="flex-1 relative">
+              <div className="flex-1 relative min-h-0 h-full">
                 <Viewer3D
                   profile={profile}
                   thickness={sketch.sheetMetalDefaults.thickness}
