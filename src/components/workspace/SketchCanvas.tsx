@@ -129,7 +129,7 @@ export function SketchCanvas({
   const [precInput1, setPrecInput1] = useState('');
   const [precInput2, setPrecInput2] = useState('');
   const precInput1Ref = useRef<HTMLInputElement>(null);
-
+  const precInput2Ref = useRef<HTMLInputElement>(null);
   // Window selection box
   const [selBoxStart, setSelBoxStart] = useState<Point2D | null>(null);
   const [selBoxEnd, setSelBoxEnd] = useState<Point2D | null>(null);
@@ -596,24 +596,24 @@ export function SketchCanvas({
         const canPrecMove = activeTool === 'move' && moveDragging && moveStart;
         if (canPrecLine || canPrecRect || canPrecMove) {
           e.preventDefault();
-          setPrecisionMode(prev => {
-            if (!prev) {
-              if (activeTool === 'rect' && drawStart) {
-                setPrecInput1(Math.abs(cursorPos.x - drawStart.x).toFixed(1));
-                setPrecInput2(Math.abs(cursorPos.y - drawStart.y).toFixed(1));
-              } else if (activeTool === 'line' && drawStart) {
-                const len = distance2D(drawStart, cursorPos);
-                const angle = (Math.atan2(cursorPos.y - drawStart.y, cursorPos.x - drawStart.x) * 180) / Math.PI;
-                setPrecInput1(len.toFixed(1));
-                setPrecInput2(angle.toFixed(1));
-              } else if (activeTool === 'move' && moveStart) {
-                setPrecInput1((cursorPos.x - moveStart.x).toFixed(1));
-                setPrecInput2((cursorPos.y - moveStart.y).toFixed(1));
-              }
-              setTimeout(() => precInput1Ref.current?.focus(), 50);
+          if (!precisionMode) {
+            // Open precision mode
+            if (activeTool === 'rect' && drawStart) {
+              setPrecInput1(Math.abs(cursorPos.x - drawStart.x).toFixed(1));
+              setPrecInput2(Math.abs(cursorPos.y - drawStart.y).toFixed(1));
+            } else if (activeTool === 'line' && drawStart) {
+              const len = distance2D(drawStart, cursorPos);
+              const angle = (Math.atan2(cursorPos.y - drawStart.y, cursorPos.x - drawStart.x) * 180) / Math.PI;
+              setPrecInput1(len.toFixed(1));
+              setPrecInput2(angle.toFixed(1));
+            } else if (activeTool === 'move' && moveStart) {
+              setPrecInput1((cursorPos.x - moveStart.x).toFixed(1));
+              setPrecInput2((cursorPos.y - moveStart.y).toFixed(1));
             }
-            return !prev;
-          });
+            setPrecisionMode(true);
+            setTimeout(() => precInput1Ref.current?.focus(), 50);
+          }
+          // If already open, Tab is handled by input onKeyDown to move between fields
           return;
         }
       }
@@ -1023,17 +1023,26 @@ export function SketchCanvas({
             step="0.1"
             value={precInput1}
             onChange={e => setPrecInput1(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handlePrecisionSubmit(); if (e.key === 'Escape') { setPrecisionMode(false); } }}
+            onKeyDown={e => {
+              if (e.key === 'Tab') { e.preventDefault(); precInput2Ref.current?.focus(); }
+              if (e.key === 'Enter') handlePrecisionSubmit();
+              if (e.key === 'Escape') { setPrecisionMode(false); }
+            }}
             className="w-20 h-7 bg-background border rounded px-2 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             placeholder={precPlaceholder1}
           />
           <span className="text-xs font-medium text-muted-foreground">{precLabel2}</span>
           <input
+            ref={precInput2Ref}
             type="number"
             step="0.1"
             value={precInput2}
             onChange={e => setPrecInput2(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handlePrecisionSubmit(); if (e.key === 'Escape') { setPrecisionMode(false); } }}
+            onKeyDown={e => {
+              if (e.key === 'Tab') { e.preventDefault(); precInput1Ref.current?.focus(); }
+              if (e.key === 'Enter') handlePrecisionSubmit();
+              if (e.key === 'Escape') { setPrecisionMode(false); }
+            }}
             className="w-20 h-7 bg-background border rounded px-2 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
             placeholder={precPlaceholder2}
           />
@@ -1043,6 +1052,13 @@ export function SketchCanvas({
             className="h-7 px-3 bg-primary text-primary-foreground text-xs rounded hover:bg-primary/90 transition-colors"
           >
             OK
+          </button>
+          <button
+            onClick={() => setPrecisionMode(false)}
+            className="h-7 w-7 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+            title="Schließen (Esc)"
+          >
+            ✕
           </button>
         </div>
       )}
