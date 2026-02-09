@@ -133,7 +133,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
+        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
       </mesh>
       {/* Tip edge outlines only (no wireframe on smooth arc) */}
       {tipEdgesGeo && (

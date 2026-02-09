@@ -1033,7 +1033,7 @@ export function createFoldMesh(
   const TH = thickness;
   const sinA = Math.sin(A);
   const cosA = Math.cos(A);
-  const EPS = 0.01;
+  const EPS = 0;
 
   function toLocal(p: Point2D): { t: number; d: number } {
     const vx = p.x - fs.x;
