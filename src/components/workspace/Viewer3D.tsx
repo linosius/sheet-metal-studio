@@ -63,11 +63,11 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
       </mesh>
-      {showLines && edgesGeo && (
+      {edgesGeo && (
         <lineSegments geometry={edgesGeo}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
+          <lineBasicMaterial color={showLines ? "#475569" : "#b0b5ba"} linewidth={1} />
         </lineSegments>
       )}
       {showLines && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
@@ -126,7 +126,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
       </mesh>
       {/* Tip (flat faces) */}
       <mesh
@@ -135,12 +135,12 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
       </mesh>
-      {/* Tip edge outlines only when lines are enabled */}
-      {showLines && tipEdgesGeo && (
+      {/* Tip edge outlines — always visible, subtle in view mode */}
+      {tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
+          <lineBasicMaterial color={showLines ? "#475569" : "#b0b5ba"} linewidth={1} />
         </lineSegments>
       )}
       {/* Bend zone tangent lines */}
@@ -329,15 +329,13 @@ function SheetMetalMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
       </mesh>
 
-      {/* Wireframe edges — hidden in view mode */}
-      {!isViewMode && (
-        <lineSegments geometry={edgesGeometry}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
-        </lineSegments>
-      )}
+      {/* Wireframe edges — always visible, subtle color in view mode */}
+      <lineSegments geometry={edgesGeometry}>
+        <lineBasicMaterial color={isViewMode ? "#b0b5ba" : "#475569"} linewidth={1} />
+      </lineSegments>
 
       {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
       {edges.map((edge) => {
