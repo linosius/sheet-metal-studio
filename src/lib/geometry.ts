@@ -1413,31 +1413,39 @@ export function createFoldMesh(
   }
   arcShape.closePath();
 
-  // Convert cutout polygons to (t, θ) space for arc hole detection
-  const R_neutral = R + K_FACTOR * TH;
-  const arcHoleLocs: Point2D[][] = [];
-  if (movingCutouts && movingCutouts.length > 0) {
-    for (const cutPoly of movingCutouts) {
-      const cutTTheta: Point2D[] = cutPoly.map(p => {
-        const loc = toLocal(p);
-        const theta = loc.d / R_neutral;
-        return { x: loc.t, y: theta };
-      });
-      if (cutTTheta.length < 3) continue;
-      const minTheta = Math.min(...cutTTheta.map(p => p.y));
-      const maxTheta = Math.max(...cutTTheta.map(p => p.y));
-      const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
-      if (!hasArcPart) continue;
-      // Clip to arc bounds
-      let clippedArcCut = [...cutTTheta];
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
-      if (clippedArcCut.length < 3) continue;
-      arcHoleLocs.push(clippedArcCut);
-    }
-  }
+   // Convert cutout polygons to (t, θ) space for arc hole detection
+   const R_neutral = R + K_FACTOR * TH;
+   const arcHoleLocs: Point2D[][] = [];
+   if (movingCutouts && movingCutouts.length > 0) {
+     console.log('[ARC-DEBUG] movingCutouts count:', movingCutouts.length);
+     console.log('[ARC-DEBUG] A (bend angle rad):', A, 'R:', R, 'TH:', TH, 'R_neutral:', R_neutral);
+     console.log('[ARC-DEBUG] tMin:', tMin, 'tMax:', tMax);
+     for (const cutPoly of movingCutouts) {
+       console.log('[ARC-DEBUG] cutPoly raw:', JSON.stringify(cutPoly));
+       const cutTTheta: Point2D[] = cutPoly.map(p => {
+         const loc = toLocal(p);
+         const theta = loc.d / R_neutral;
+         console.log('[ARC-DEBUG] point', JSON.stringify(p), '-> t:', loc.t, 'd:', loc.d, 'theta:', theta);
+         return { x: loc.t, y: theta };
+       });
+       if (cutTTheta.length < 3) { console.log('[ARC-DEBUG] skipped: < 3 pts'); continue; }
+       const minTheta = Math.min(...cutTTheta.map(p => p.y));
+       const maxTheta = Math.max(...cutTTheta.map(p => p.y));
+       console.log('[ARC-DEBUG] minTheta:', minTheta, 'maxTheta:', maxTheta, 'A:', A);
+       const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
+       if (!hasArcPart) { console.log('[ARC-DEBUG] skipped: no arc part'); continue; }
+       // Clip to arc bounds
+       let clippedArcCut = [...cutTTheta];
+       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
+       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
+       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
+       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
+       console.log('[ARC-DEBUG] clipped polygon pts:', clippedArcCut.length, JSON.stringify(clippedArcCut));
+       if (clippedArcCut.length < 3) { console.log('[ARC-DEBUG] skipped after clip'); continue; }
+       arcHoleLocs.push(clippedArcCut);
+     }
+     console.log('[ARC-DEBUG] arcHoleLocs count:', arcHoleLocs.length);
+   }
 
   // Point-in-polygon test (ray casting)
   function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
