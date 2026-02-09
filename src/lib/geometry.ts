@@ -1244,8 +1244,20 @@ export function createFoldMesh(
   const nTipOuter = U3.clone().multiplyScalar(sinA)
     .add(W3.clone().multiplyScalar(-cosA));
 
-  const tI = locs.map(l => addTipV(tipInner(l.t, l.d), nTipInner));
-  const tO = locs.map(l => addTipV(tipOuter(l.t, l.d), nTipOuter));
+  // Adjust tip fold-line vertices to match arc's tapered end at θ=A
+  const arcEndStep = arcSteps[ARC_N];
+  const tL_end = arcEndStep.tLI;
+  const tR_end = arcEndStep.tRI;
+  const tipLocs = locs.map(l => {
+    if (l.d < DTOL && tMax > tMin) {
+      const frac = (l.t - tMin) / (tMax - tMin);
+      return { t: tL_end + frac * (tR_end - tL_end), d: l.d };
+    }
+    return l;
+  });
+
+  const tI = tipLocs.map(l => addTipV(tipInner(l.t, l.d), nTipInner));
+  const tO = tipLocs.map(l => addTipV(tipOuter(l.t, l.d), nTipOuter));
 
   // Inner and outer surface fans
   for (let i = 1; i < tI.length - 1; i++) {
@@ -1254,14 +1266,14 @@ export function createFoldMesh(
   }
 
   // Side strips — separate vertices with per-face side normals
-  for (let i = 0; i < locs.length; i++) {
-    const j = (i + 1) % locs.length;
-    if (locs[i].d < DTOL && locs[j].d < DTOL) continue;
+  for (let i = 0; i < tipLocs.length; i++) {
+    const j = (i + 1) % tipLocs.length;
+    if (tipLocs[i].d < DTOL && tipLocs[j].d < DTOL) continue;
 
-    const pII = tipInner(locs[i].t, locs[i].d);
-    const pIJ = tipInner(locs[j].t, locs[j].d);
-    const pOI = tipOuter(locs[i].t, locs[i].d);
-    const pOJ = tipOuter(locs[j].t, locs[j].d);
+    const pII = tipInner(tipLocs[i].t, tipLocs[i].d);
+    const pIJ = tipInner(tipLocs[j].t, tipLocs[j].d);
+    const pOI = tipOuter(tipLocs[i].t, tipLocs[i].d);
+    const pOJ = tipOuter(tipLocs[j].t, tipLocs[j].d);
 
     const e1 = new THREE.Vector3().subVectors(pIJ, pII);
     const e2 = new THREE.Vector3().subVectors(pOI, pII);
