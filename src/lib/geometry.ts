@@ -1094,7 +1094,46 @@ export function createFoldMesh(
 
   const ARC_N = 24;
 
-  // Uniform t-range for ALL arc steps — the arc is a clean cylinder along the fold line
+  // ── Compute polygon-edge slopes at fold line endpoints for arc tapering ──
+  // For diagonal folds the polygon boundary narrows away from the fold line.
+  // Tapering the arc's t-boundaries with θ creates the ruled-surface "twist"
+  // visible in Inventor, instead of flat rectangular end-caps.
+  let leftSlope = 0;   // dt/dd from left fold-line vertex toward adjacent non-fold vertex
+  let rightSlope = 0;  // dt/dd from right fold-line vertex toward adjacent non-fold vertex
+  let leftAdjD = Infinity;
+  let rightAdjD = Infinity;
+
+  const foldIdxs: number[] = [];
+  for (let fi = 0; fi < locs.length; fi++) {
+    if (locs[fi].d < DTOL) foldIdxs.push(fi);
+  }
+  if (foldIdxs.length >= 2) {
+    // Left fold vertex (smallest t)
+    let leftIdx = foldIdxs[0];
+    for (const fi of foldIdxs) { if (locs[fi].t < locs[leftIdx].t) leftIdx = fi; }
+    const ln1 = (leftIdx - 1 + locs.length) % locs.length;
+    const ln2 = (leftIdx + 1) % locs.length;
+    const lAdj = locs[ln1].d >= DTOL ? locs[ln1] : (locs[ln2].d >= DTOL ? locs[ln2] : null);
+    if (lAdj && lAdj.d > DTOL) {
+      leftSlope = (lAdj.t - tMin) / lAdj.d;
+      leftAdjD = lAdj.d;
+    }
+
+    // Right fold vertex (largest t)
+    let rightIdx = foldIdxs[0];
+    for (const fi of foldIdxs) { if (locs[fi].t > locs[rightIdx].t) rightIdx = fi; }
+    const rn1 = (rightIdx - 1 + locs.length) % locs.length;
+    const rn2 = (rightIdx + 1) % locs.length;
+    const rAdj = locs[rn1].d >= DTOL ? locs[rn1] : (locs[rn2].d >= DTOL ? locs[rn2] : null);
+    if (rAdj && rAdj.d > DTOL) {
+      rightSlope = (rAdj.t - tMax) / rAdj.d;
+      rightAdjD = rAdj.d;
+    }
+  }
+
+  const K_FACTOR = 0.44;
+  const BA_taper = (R + K_FACTOR * TH) * A; // bend allowance = flat-pattern d consumed by arc
+
   interface ArcStep {
     ang: number;
     tLI: number; tRI: number;
@@ -1103,7 +1142,13 @@ export function createFoldMesh(
   const arcSteps: ArcStep[] = [];
   for (let i = 0; i <= ARC_N; i++) {
     const ang = A * (i / ARC_N);
-    arcSteps.push({ ang, tLI: tMin, tRI: tMax, tLO: tMin, tRO: tMax });
+    const d_eq = BA_taper * (i / ARC_N); // equivalent flat-pattern distance from fold line
+
+    // Taper boundaries following polygon edge slopes, clamped to adjacent vertex
+    const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
+    const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
+
+    arcSteps.push({ ang, tLI: tL, tRI: tR, tLO: tL, tRO: tR });
   }
 
   // Inner surface — smooth normals pointing toward center of curvature
