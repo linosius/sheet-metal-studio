@@ -1,7 +1,13 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
-import { SketchEntity, Point2D, snapToGrid, distance2D, midpoint2D } from '@/lib/sheetmetal';
+import {
+  SketchEntity, Point2D, snapToGrid, distance2D, midpoint2D,
+  arcSvgPath, trimLineAtIntersections, extendLineToNearest, closestEndpoint,
+  offsetLine, offsetRect, offsetCircle, pointSideOfLine, mirrorEntity,
+  generateId,
+} from '@/lib/sheetmetal';
 import { SketchTool } from '@/hooks/useSketchStore';
 import { cn } from '@/lib/utils';
+import { toast } from 'sonner';
 
 interface SketchCanvasProps {
   entities: SketchEntity[];
@@ -12,14 +18,21 @@ interface SketchCanvasProps {
   onAddLine: (start: Point2D, end: Point2D) => void;
   onAddRect: (origin: Point2D, width: number, height: number) => void;
   onAddCircle: (center: Point2D, radius: number) => void;
+  onAddArc: (center: Point2D, radius: number, startAngle: number, endAngle: number) => void;
+  onAddPoint: (position: Point2D) => void;
+  onUpdateEntity: (id: string, updates: Partial<SketchEntity>) => void;
+  onAddEntities: (entities: SketchEntity[]) => void;
   onSelectEntity: (id: string, multi?: boolean) => void;
   onDeselectAll: () => void;
   onRemoveEntities: (ids: string[]) => void;
 }
 
-const CANVAS_SIZE = 2000; // virtual canvas mm
+const CANVAS_SIZE = 2000;
 const ZOOM_MIN = 0.2;
 const ZOOM_MAX = 5;
+
+type ArcPhase = 'center' | 'radius' | 'end';
+type MirrorPhase = 'axis1' | 'axis2';
 
 export function SketchCanvas({
   entities,
@@ -30,6 +43,10 @@ export function SketchCanvas({
   onAddLine,
   onAddRect,
   onAddCircle,
+  onAddArc,
+  onAddPoint,
+  onUpdateEntity,
+  onAddEntities,
   onSelectEntity,
   onDeselectAll,
   onRemoveEntities,
@@ -42,6 +59,23 @@ export function SketchCanvas({
   // Drawing state
   const [drawStart, setDrawStart] = useState<Point2D | null>(null);
   const [cursorPos, setCursorPos] = useState<Point2D>({ x: 0, y: 0 });
+
+  // Arc state
+  const [arcPhase, setArcPhase] = useState<ArcPhase>('center');
+  const [arcCenter, setArcCenter] = useState<Point2D | null>(null);
+  const [arcRadius, setArcRadius] = useState<number>(0);
+  const [arcStartAngle, setArcStartAngle] = useState<number>(0);
+
+  // Move state
+  const [moveStart, setMoveStart] = useState<Point2D | null>(null);
+
+  // Mirror state
+  const [mirrorPhase, setMirrorPhase] = useState<MirrorPhase>('axis1');
+  const [mirrorAxis1, setMirrorAxis1] = useState<Point2D | null>(null);
+
+  // Dimension editing
+  const [editingDimId, setEditingDimId] = useState<string | null>(null);
+  const [dimInputValue, setDimInputValue] = useState('');
 
   const svgToWorld = useCallback((clientX: number, clientY: number): Point2D => {
     const svg = svgRef.current;
@@ -59,57 +93,264 @@ export function SketchCanvas({
     return snapEnabled ? snapToGrid(p, gridSize) : p;
   }, [snapEnabled, gridSize]);
 
+  // Reset tool state on tool change
+  useEffect(() => {
+    setDrawStart(null);
+    setArcPhase('center');
+    setArcCenter(null);
+    setMoveStart(null);
+    setMirrorPhase('axis1');
+    setMirrorAxis1(null);
+    setEditingDimId(null);
+  }, [activeTool]);
+
+  // Find nearest entity to a point (for trim/extend/offset/dimension)
+  const findNearestEntity = useCallback((p: Point2D): SketchEntity | null => {
+    let best: SketchEntity | null = null;
+    let bestDist = 15; // threshold in world units
+    for (const ent of entities) {
+      let d = Infinity;
+      if (ent.type === 'line') {
+        const dx = ent.end.x - ent.start.x, dy = ent.end.y - ent.start.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 > 0) {
+          const t = Math.max(0, Math.min(1, ((p.x - ent.start.x) * dx + (p.y - ent.start.y) * dy) / len2));
+          const proj = { x: ent.start.x + t * dx, y: ent.start.y + t * dy };
+          d = distance2D(p, proj);
+        }
+      } else if (ent.type === 'rect') {
+        // distance to rect edges
+        const corners = [
+          { x: ent.origin.x, y: ent.origin.y },
+          { x: ent.origin.x + ent.width, y: ent.origin.y },
+          { x: ent.origin.x + ent.width, y: ent.origin.y + ent.height },
+          { x: ent.origin.x, y: ent.origin.y + ent.height },
+        ];
+        for (let i = 0; i < 4; i++) {
+          const a = corners[i], b = corners[(i + 1) % 4];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const len2 = dx * dx + dy * dy;
+          if (len2 > 0) {
+            const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+            const proj = { x: a.x + t * dx, y: a.y + t * dy };
+            d = Math.min(d, distance2D(p, proj));
+          }
+        }
+      } else if (ent.type === 'circle') {
+        d = Math.abs(distance2D(p, ent.center) - ent.radius);
+      } else if (ent.type === 'arc') {
+        d = Math.abs(distance2D(p, ent.center) - ent.radius);
+      } else if (ent.type === 'point') {
+        d = distance2D(p, ent.position);
+      }
+      if (d < bestDist) { bestDist = d; best = ent; }
+    }
+    return best;
+  }, [entities]);
+
   // Mouse handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
-      // Middle click or Alt+click = pan
       setIsPanning(true);
       setPanStart({ x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y });
       return;
     }
-
     if (e.button !== 0) return;
 
     const worldPos = svgToWorld(e.clientX, e.clientY);
     const snapped = getSnappedPoint(worldPos);
 
-    if (activeTool === 'select') {
-      onDeselectAll();
-      return;
-    }
+    switch (activeTool) {
+      case 'select':
+        onDeselectAll();
+        break;
 
-    if (activeTool === 'line' || activeTool === 'rect' || activeTool === 'circle') {
-      if (!drawStart) {
-        setDrawStart(snapped);
-      } else {
-        // Complete the shape
-        if (activeTool === 'line') {
-          if (distance2D(drawStart, snapped) > 0.5) {
-            onAddLine(drawStart, snapped);
-            // Chain: start next line from this endpoint
-            setDrawStart(snapped);
+      case 'line':
+      case 'rect':
+      case 'circle':
+        if (!drawStart) {
+          setDrawStart(snapped);
+        } else {
+          if (activeTool === 'line') {
+            if (distance2D(drawStart, snapped) > 0.5) {
+              onAddLine(drawStart, snapped);
+              setDrawStart(snapped); // chain
+            }
+          } else if (activeTool === 'rect') {
+            const w = snapped.x - drawStart.x, h = snapped.y - drawStart.y;
+            if (Math.abs(w) > 0.5 && Math.abs(h) > 0.5) {
+              onAddRect(
+                { x: Math.min(drawStart.x, snapped.x), y: Math.min(drawStart.y, snapped.y) },
+                Math.abs(w), Math.abs(h),
+              );
+            }
+            setDrawStart(null);
+          } else if (activeTool === 'circle') {
+            const r = distance2D(drawStart, snapped);
+            if (r > 0.5) onAddCircle(drawStart, r);
+            setDrawStart(null);
           }
-        } else if (activeTool === 'rect') {
-          const w = snapped.x - drawStart.x;
-          const h = snapped.y - drawStart.y;
-          if (Math.abs(w) > 0.5 && Math.abs(h) > 0.5) {
-            onAddRect(
-              { x: Math.min(drawStart.x, snapped.x), y: Math.min(drawStart.y, snapped.y) },
-              Math.abs(w),
-              Math.abs(h),
-            );
-          }
-          setDrawStart(null);
-        } else if (activeTool === 'circle') {
-          const r = distance2D(drawStart, snapped);
-          if (r > 0.5) {
-            onAddCircle(drawStart, r);
-          }
-          setDrawStart(null);
         }
+        break;
+
+      case 'arc':
+        if (arcPhase === 'center') {
+          setArcCenter(snapped);
+          setArcPhase('radius');
+        } else if (arcPhase === 'radius' && arcCenter) {
+          const r = distance2D(arcCenter, snapped);
+          if (r > 0.5) {
+            setArcRadius(r);
+            setArcStartAngle(Math.atan2(snapped.y - arcCenter.y, snapped.x - arcCenter.x));
+            setArcPhase('end');
+          }
+        } else if (arcPhase === 'end' && arcCenter) {
+          const endAngle = Math.atan2(snapped.y - arcCenter.y, snapped.x - arcCenter.x);
+          onAddArc(arcCenter, arcRadius, arcStartAngle, endAngle);
+          setArcPhase('center');
+          setArcCenter(null);
+        }
+        break;
+
+      case 'point':
+        onAddPoint(snapped);
+        break;
+
+      case 'move':
+        if (selectedIds.length === 0) {
+          toast.info('Select entities first, then use Move');
+          break;
+        }
+        if (!moveStart) {
+          setMoveStart(snapped);
+        } else {
+          const dx = snapped.x - moveStart.x, dy = snapped.y - moveStart.y;
+          for (const id of selectedIds) {
+            const ent = entities.find(e => e.id === id);
+            if (!ent) continue;
+            if (ent.type === 'line') {
+              onUpdateEntity(id, { start: { x: ent.start.x + dx, y: ent.start.y + dy }, end: { x: ent.end.x + dx, y: ent.end.y + dy } });
+            } else if (ent.type === 'rect') {
+              onUpdateEntity(id, { origin: { x: ent.origin.x + dx, y: ent.origin.y + dy } });
+            } else if (ent.type === 'circle') {
+              onUpdateEntity(id, { center: { x: ent.center.x + dx, y: ent.center.y + dy } });
+            } else if (ent.type === 'arc') {
+              onUpdateEntity(id, { center: { x: ent.center.x + dx, y: ent.center.y + dy } });
+            } else if (ent.type === 'point') {
+              onUpdateEntity(id, { position: { x: ent.position.x + dx, y: ent.position.y + dy } });
+            }
+          }
+          setMoveStart(null);
+          toast.success('Entities moved');
+        }
+        break;
+
+      case 'trim': {
+        const nearest = findNearestEntity(worldPos);
+        if (!nearest || nearest.type !== 'line') {
+          toast.info('Click on a line near an intersection to trim');
+          break;
+        }
+        const result = trimLineAtIntersections(nearest, entities, worldPos);
+        if (!result) {
+          toast.info('No intersections found to trim at');
+          break;
+        }
+        // Replace the line with two segments (excluding the trimmed portion)
+        const allPts = [nearest.start, result.start, result.end, nearest.end];
+        onRemoveEntities([nearest.id]);
+        if (distance2D(allPts[0], allPts[1]) > 0.5) {
+          onAddLine(allPts[0], allPts[1]);
+        }
+        if (distance2D(allPts[2], allPts[3]) > 0.5) {
+          onAddLine(allPts[2], allPts[3]);
+        }
+        toast.success('Trimmed');
+        break;
+      }
+
+      case 'extend': {
+        const nearest = findNearestEntity(worldPos);
+        if (!nearest || nearest.type !== 'line') {
+          toast.info('Click near a line endpoint to extend');
+          break;
+        }
+        const ep = closestEndpoint(nearest, worldPos);
+        const newPt = extendLineToNearest(nearest, ep, entities);
+        if (!newPt) {
+          toast.info('No entity found to extend to');
+          break;
+        }
+        onUpdateEntity(nearest.id, ep === 'start' ? { start: newPt } : { end: newPt });
+        toast.success('Extended');
+        break;
+      }
+
+      case 'offset': {
+        const nearest = findNearestEntity(worldPos);
+        if (!nearest) { toast.info('Click on an entity to offset'); break; }
+        const dist = gridSize; // use grid size as default offset distance
+        const side = nearest.type === 'line'
+          ? pointSideOfLine(worldPos, nearest.start, nearest.end)
+          : (distance2D(worldPos, (nearest as any).center ?? nearest) > ((nearest as any).radius ?? 0) ? 1 : -1);
+        if (nearest.type === 'line') {
+          const off = offsetLine(nearest, dist, side);
+          onAddLine(off.start, off.end);
+        } else if (nearest.type === 'rect') {
+          const off = offsetRect(nearest, dist, side);
+          onAddRect(off.origin, off.width, off.height);
+        } else if (nearest.type === 'circle') {
+          const off = offsetCircle(nearest, dist, side);
+          onAddCircle(off.center, off.radius);
+        } else {
+          toast.info('Offset not supported for this entity type');
+          break;
+        }
+        toast.success(`Offset by ${dist}mm`);
+        break;
+      }
+
+      case 'mirror':
+        if (selectedIds.length === 0) {
+          toast.info('Select entities first, then use Mirror');
+          break;
+        }
+        if (mirrorPhase === 'axis1') {
+          setMirrorAxis1(snapped);
+          setMirrorPhase('axis2');
+        } else if (mirrorPhase === 'axis2' && mirrorAxis1) {
+          if (distance2D(mirrorAxis1, snapped) < 0.5) break;
+          const mirrored = selectedIds
+            .map(id => entities.find(e => e.id === id))
+            .filter(Boolean)
+            .map(ent => mirrorEntity(ent!, mirrorAxis1, snapped));
+          onAddEntities(mirrored);
+          setMirrorPhase('axis1');
+          setMirrorAxis1(null);
+          toast.success(`Mirrored ${mirrored.length} entities`);
+        }
+        break;
+
+      case 'dimension': {
+        const nearest = findNearestEntity(worldPos);
+        if (!nearest) { toast.info('Click on an entity to edit its dimension'); break; }
+        setEditingDimId(nearest.id);
+        // Set initial value
+        if (nearest.type === 'line') {
+          setDimInputValue(distance2D(nearest.start, nearest.end).toFixed(1));
+        } else if (nearest.type === 'rect') {
+          setDimInputValue(`${nearest.width.toFixed(1)} x ${nearest.height.toFixed(1)}`);
+        } else if (nearest.type === 'circle') {
+          setDimInputValue(nearest.radius.toFixed(1));
+        } else if (nearest.type === 'arc') {
+          setDimInputValue(nearest.radius.toFixed(1));
+        }
+        break;
       }
     }
-  }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onAddCircle, onDeselectAll, viewBox]);
+  }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onAddCircle, onAddArc, onAddPoint,
+    onUpdateEntity, onAddEntities, onDeselectAll, onRemoveEntities, viewBox, entities, selectedIds,
+    arcPhase, arcCenter, arcRadius, arcStartAngle, moveStart, mirrorPhase, mirrorAxis1, findNearestEntity, gridSize]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const worldPos = svgToWorld(e.clientX, e.clientY);
@@ -132,7 +373,6 @@ export function SketchCanvas({
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.1 : 0.9;
     const worldPos = svgToWorld(e.clientX, e.clientY);
-
     setViewBox(prev => {
       const newW = Math.max(prev.w * ZOOM_MIN, Math.min(prev.w * factor, CANVAS_SIZE * ZOOM_MAX));
       const newH = Math.max(prev.h * ZOOM_MIN, Math.min(prev.h * factor, CANVAS_SIZE * ZOOM_MAX));
@@ -140,17 +380,56 @@ export function SketchCanvas({
       return {
         x: worldPos.x - (worldPos.x - prev.x) * ratio,
         y: worldPos.y - (worldPos.y - prev.y) * ratio,
-        w: newW,
-        h: newH,
+        w: newW, h: newH,
       };
     });
   }, [svgToWorld]);
+
+  // Handle dimension edit submit
+  const handleDimSubmit = useCallback(() => {
+    if (!editingDimId) return;
+    const ent = entities.find(e => e.id === editingDimId);
+    if (!ent) { setEditingDimId(null); return; }
+
+    if (ent.type === 'line') {
+      const newLen = parseFloat(dimInputValue);
+      if (isNaN(newLen) || newLen <= 0) { setEditingDimId(null); return; }
+      const dx = ent.end.x - ent.start.x, dy = ent.end.y - ent.start.y;
+      const curLen = Math.sqrt(dx * dx + dy * dy);
+      if (curLen < 1e-10) { setEditingDimId(null); return; }
+      const scale = newLen / curLen;
+      onUpdateEntity(editingDimId, { end: { x: ent.start.x + dx * scale, y: ent.start.y + dy * scale } });
+    } else if (ent.type === 'rect') {
+      const parts = dimInputValue.split(/[x×,]/i).map(s => parseFloat(s.trim()));
+      if (parts.length === 2 && parts[0] > 0 && parts[1] > 0) {
+        onUpdateEntity(editingDimId, { width: parts[0], height: parts[1] });
+      }
+    } else if (ent.type === 'circle') {
+      const newR = parseFloat(dimInputValue);
+      if (!isNaN(newR) && newR > 0) onUpdateEntity(editingDimId, { radius: newR });
+    } else if (ent.type === 'arc') {
+      const newR = parseFloat(dimInputValue);
+      if (!isNaN(newR) && newR > 0) onUpdateEntity(editingDimId, { radius: newR });
+    }
+    setEditingDimId(null);
+    toast.success('Dimension updated');
+  }, [editingDimId, dimInputValue, entities, onUpdateEntity]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setDrawStart(null);
+        setArcPhase('center');
+        setArcCenter(null);
+        setMoveStart(null);
+        setMirrorPhase('axis1');
+        setMirrorAxis1(null);
+        setEditingDimId(null);
+      }
+      if (e.key === 'Enter' && editingDimId) {
+        e.preventDefault();
+        handleDimSubmit();
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedIds.length > 0) {
         e.preventDefault();
@@ -159,7 +438,7 @@ export function SketchCanvas({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selectedIds, onRemoveEntities]);
+  }, [selectedIds, onRemoveEntities, editingDimId, handleDimSubmit]);
 
   // Generate grid lines
   const gridLines = [];
@@ -172,23 +451,17 @@ export function SketchCanvas({
   for (let x = startX; x <= endX; x += gridSize) {
     const isMajor = Math.abs(x % majorGrid) < 0.01;
     gridLines.push(
-      <line
-        key={`gv${x}`}
-        x1={x} y1={viewBox.y} x2={x} y2={viewBox.y + viewBox.h}
+      <line key={`gv${x}`} x1={x} y1={viewBox.y} x2={x} y2={viewBox.y + viewBox.h}
         stroke={isMajor ? 'hsl(var(--cad-grid-major))' : 'hsl(var(--cad-grid))'}
-        strokeWidth={isMajor ? 0.5 : 0.2}
-      />
+        strokeWidth={isMajor ? 0.5 : 0.2} />
     );
   }
   for (let y = startY; y <= endY; y += gridSize) {
     const isMajor = Math.abs(y % majorGrid) < 0.01;
     gridLines.push(
-      <line
-        key={`gh${y}`}
-        x1={viewBox.x} y1={y} x2={viewBox.x + viewBox.w} y2={y}
+      <line key={`gh${y}`} x1={viewBox.x} y1={y} x2={viewBox.x + viewBox.w} y2={y}
         stroke={isMajor ? 'hsl(var(--cad-grid-major))' : 'hsl(var(--cad-grid))'}
-        strokeWidth={isMajor ? 0.5 : 0.2}
-      />
+        strokeWidth={isMajor ? 0.5 : 0.2} />
     );
   }
 
@@ -207,26 +480,24 @@ export function SketchCanvas({
 
       return (
         <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
-          <line
-            x1={entity.start.x} y1={entity.start.y}
-            x2={entity.end.x} y2={entity.end.y}
-            stroke={strokeColor}
-            strokeWidth={strokeWidth}
-            className="cursor-pointer"
-          />
-          {/* Dimension label */}
-          <text
-            x={mid.x + offsetX}
-            y={mid.y + offsetY}
-            fill="hsl(var(--cad-dimension))"
-            fontSize={3}
-            fontFamily="JetBrains Mono, monospace"
-            textAnchor="middle"
-            dominantBaseline="middle"
-          >
-            {dist.toFixed(1)}
-          </text>
-          {/* Endpoints */}
+          <line x1={entity.start.x} y1={entity.start.y} x2={entity.end.x} y2={entity.end.y}
+            stroke={strokeColor} strokeWidth={strokeWidth} className="cursor-pointer" />
+          {editingDimId === entity.id ? (
+            <foreignObject x={mid.x + offsetX - 15} y={mid.y + offsetY - 5} width={30} height={10}>
+              <input
+                autoFocus
+                value={dimInputValue}
+                onChange={e => setDimInputValue(e.target.value)}
+                onBlur={handleDimSubmit}
+                onKeyDown={e => { if (e.key === 'Enter') handleDimSubmit(); }}
+                style={{ width: '100%', fontSize: '8px', textAlign: 'center', background: 'rgba(0,0,0,0.8)', color: '#0f0', border: 'none', outline: 'none', fontFamily: 'monospace' }}
+              />
+            </foreignObject>
+          ) : (
+            <text x={mid.x + offsetX} y={mid.y + offsetY}
+              fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace"
+              textAnchor="middle" dominantBaseline="middle">{dist.toFixed(1)}</text>
+          )}
           <circle cx={entity.start.x} cy={entity.start.y} r={1} fill={strokeColor} />
           <circle cx={entity.end.x} cy={entity.end.y} r={1} fill={strokeColor} />
         </g>
@@ -236,39 +507,31 @@ export function SketchCanvas({
     if (entity.type === 'rect') {
       return (
         <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
-          <rect
-            x={entity.origin.x}
-            y={entity.origin.y}
-            width={entity.width}
-            height={entity.height}
-            stroke={strokeColor}
-            strokeWidth={strokeWidth}
-            fill="none"
-            className="cursor-pointer"
-          />
-          {/* Width dimension */}
-          <text
-            x={entity.origin.x + entity.width / 2}
-            y={entity.origin.y - 3}
-            fill="hsl(var(--cad-dimension))"
-            fontSize={3}
-            fontFamily="JetBrains Mono, monospace"
-            textAnchor="middle"
-          >
-            {entity.width.toFixed(1)}
-          </text>
-          {/* Height dimension */}
-          <text
-            x={entity.origin.x + entity.width + 5}
-            y={entity.origin.y + entity.height / 2}
-            fill="hsl(var(--cad-dimension))"
-            fontSize={3}
-            fontFamily="JetBrains Mono, monospace"
-            textAnchor="start"
-            dominantBaseline="middle"
-          >
-            {entity.height.toFixed(1)}
-          </text>
+          <rect x={entity.origin.x} y={entity.origin.y} width={entity.width} height={entity.height}
+            stroke={strokeColor} strokeWidth={strokeWidth} fill="none" className="cursor-pointer" />
+          {editingDimId === entity.id ? (
+            <foreignObject x={entity.origin.x + entity.width / 2 - 20} y={entity.origin.y - 12} width={40} height={10}>
+              <input
+                autoFocus
+                value={dimInputValue}
+                onChange={e => setDimInputValue(e.target.value)}
+                onBlur={handleDimSubmit}
+                onKeyDown={e => { if (e.key === 'Enter') handleDimSubmit(); }}
+                style={{ width: '100%', fontSize: '8px', textAlign: 'center', background: 'rgba(0,0,0,0.8)', color: '#0f0', border: 'none', outline: 'none', fontFamily: 'monospace' }}
+              />
+            </foreignObject>
+          ) : (
+            <>
+              <text x={entity.origin.x + entity.width / 2} y={entity.origin.y - 3}
+                fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace" textAnchor="middle">
+                {entity.width.toFixed(1)}
+              </text>
+              <text x={entity.origin.x + entity.width + 5} y={entity.origin.y + entity.height / 2}
+                fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace" textAnchor="start" dominantBaseline="middle">
+                {entity.height.toFixed(1)}
+              </text>
+            </>
+          )}
         </g>
       );
     }
@@ -276,103 +539,166 @@ export function SketchCanvas({
     if (entity.type === 'circle') {
       return (
         <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
-          <circle
-            cx={entity.center.x}
-            cy={entity.center.y}
-            r={entity.radius}
-            stroke={strokeColor}
-            strokeWidth={strokeWidth}
-            fill="none"
-            className="cursor-pointer"
-          />
-          {/* Radius dimension */}
-          <text
-            x={entity.center.x + entity.radius + 3}
-            y={entity.center.y}
-            fill="hsl(var(--cad-dimension))"
-            fontSize={3}
-            fontFamily="JetBrains Mono, monospace"
-            textAnchor="start"
-            dominantBaseline="middle"
-          >
+          <circle cx={entity.center.x} cy={entity.center.y} r={entity.radius}
+            stroke={strokeColor} strokeWidth={strokeWidth} fill="none" className="cursor-pointer" />
+          {editingDimId === entity.id ? (
+            <foreignObject x={entity.center.x + entity.radius + 2} y={entity.center.y - 5} width={25} height={10}>
+              <input
+                autoFocus
+                value={dimInputValue}
+                onChange={e => setDimInputValue(e.target.value)}
+                onBlur={handleDimSubmit}
+                onKeyDown={e => { if (e.key === 'Enter') handleDimSubmit(); }}
+                style={{ width: '100%', fontSize: '8px', textAlign: 'center', background: 'rgba(0,0,0,0.8)', color: '#0f0', border: 'none', outline: 'none', fontFamily: 'monospace' }}
+              />
+            </foreignObject>
+          ) : (
+            <text x={entity.center.x + entity.radius + 3} y={entity.center.y}
+              fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace" textAnchor="start" dominantBaseline="middle">
+              R{entity.radius.toFixed(1)}
+            </text>
+          )}
+          <circle cx={entity.center.x} cy={entity.center.y} r={0.8} fill={strokeColor} />
+        </g>
+      );
+    }
+
+    if (entity.type === 'arc') {
+      const path = arcSvgPath(entity.center.x, entity.center.y, entity.radius, entity.startAngle, entity.endAngle);
+      return (
+        <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
+          <path d={path} stroke={strokeColor} strokeWidth={strokeWidth} fill="none" className="cursor-pointer" />
+          <text x={entity.center.x + entity.radius + 3} y={entity.center.y}
+            fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace" textAnchor="start" dominantBaseline="middle">
             R{entity.radius.toFixed(1)}
           </text>
-          {/* Center point */}
-          <circle cx={entity.center.x} cy={entity.center.y} r={0.8} fill={strokeColor} />
+          <circle cx={entity.center.x} cy={entity.center.y} r={0.6} fill={strokeColor} />
+        </g>
+      );
+    }
+
+    if (entity.type === 'point') {
+      const sz = 2;
+      return (
+        <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
+          <line x1={entity.position.x - sz} y1={entity.position.y} x2={entity.position.x + sz} y2={entity.position.y}
+            stroke={strokeColor} strokeWidth={strokeWidth} />
+          <line x1={entity.position.x} y1={entity.position.y - sz} x2={entity.position.x} y2={entity.position.y + sz}
+            stroke={strokeColor} strokeWidth={strokeWidth} />
+          <circle cx={entity.position.x} cy={entity.position.y} r={0.8} fill={strokeColor} />
         </g>
       );
     }
 
     return null;
   };
+
   // Preview shape while drawing
   const renderPreview = () => {
-    if (!drawStart) return null;
-
-    if (activeTool === 'line') {
+    if (activeTool === 'line' && drawStart) {
       return (
-        <line
-          x1={drawStart.x} y1={drawStart.y}
-          x2={cursorPos.x} y2={cursorPos.y}
-          stroke="hsl(var(--cad-sketch-line))"
-          strokeWidth={0.6}
-          strokeDasharray="2 1"
-          opacity={0.7}
-        />
+        <line x1={drawStart.x} y1={drawStart.y} x2={cursorPos.x} y2={cursorPos.y}
+          stroke="hsl(var(--cad-sketch-line))" strokeWidth={0.6} strokeDasharray="2 1" opacity={0.7} />
       );
     }
 
-    if (activeTool === 'rect') {
-      const x = Math.min(drawStart.x, cursorPos.x);
-      const y = Math.min(drawStart.y, cursorPos.y);
-      const w = Math.abs(cursorPos.x - drawStart.x);
-      const h = Math.abs(cursorPos.y - drawStart.y);
+    if (activeTool === 'rect' && drawStart) {
+      const x = Math.min(drawStart.x, cursorPos.x), y = Math.min(drawStart.y, cursorPos.y);
+      const w = Math.abs(cursorPos.x - drawStart.x), h = Math.abs(cursorPos.y - drawStart.y);
       return (
-        <rect
-          x={x} y={y} width={w} height={h}
-          stroke="hsl(var(--cad-sketch-line))"
-          strokeWidth={0.6}
-          strokeDasharray="2 1"
-          fill="hsl(var(--cad-sketch-line) / 0.05)"
-          opacity={0.7}
-        />
+        <rect x={x} y={y} width={w} height={h}
+          stroke="hsl(var(--cad-sketch-line))" strokeWidth={0.6} strokeDasharray="2 1"
+          fill="hsl(var(--cad-sketch-line) / 0.05)" opacity={0.7} />
       );
     }
 
-    if (activeTool === 'circle') {
+    if (activeTool === 'circle' && drawStart) {
       const r = distance2D(drawStart, cursorPos);
       return (
         <g opacity={0.7}>
-          <circle
-            cx={drawStart.x} cy={drawStart.y} r={r}
-            stroke="hsl(var(--cad-sketch-line))"
-            strokeWidth={0.6}
-            strokeDasharray="2 1"
-            fill="none"
-          />
-          {/* Radius line */}
-          <line
-            x1={drawStart.x} y1={drawStart.y}
-            x2={cursorPos.x} y2={cursorPos.y}
-            stroke="hsl(var(--cad-dimension))"
-            strokeWidth={0.3}
-            strokeDasharray="1 1"
-          />
-          <text
-            x={(drawStart.x + cursorPos.x) / 2 + 2}
-            y={(drawStart.y + cursorPos.y) / 2 - 2}
-            fill="hsl(var(--cad-dimension))"
-            fontSize={3}
-            fontFamily="JetBrains Mono, monospace"
-          >
+          <circle cx={drawStart.x} cy={drawStart.y} r={r}
+            stroke="hsl(var(--cad-sketch-line))" strokeWidth={0.6} strokeDasharray="2 1" fill="none" />
+          <line x1={drawStart.x} y1={drawStart.y} x2={cursorPos.x} y2={cursorPos.y}
+            stroke="hsl(var(--cad-dimension))" strokeWidth={0.3} strokeDasharray="1 1" />
+          <text x={(drawStart.x + cursorPos.x) / 2 + 2} y={(drawStart.y + cursorPos.y) / 2 - 2}
+            fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace">
             R{r.toFixed(1)}
           </text>
         </g>
       );
     }
 
+    if (activeTool === 'arc' && arcCenter) {
+      if (arcPhase === 'radius') {
+        const r = distance2D(arcCenter, cursorPos);
+        return (
+          <g opacity={0.5}>
+            <circle cx={arcCenter.x} cy={arcCenter.y} r={r}
+              stroke="hsl(var(--cad-sketch-line))" strokeWidth={0.3} strokeDasharray="2 2" fill="none" />
+            <line x1={arcCenter.x} y1={arcCenter.y} x2={cursorPos.x} y2={cursorPos.y}
+              stroke="hsl(var(--cad-dimension))" strokeWidth={0.3} strokeDasharray="1 1" />
+          </g>
+        );
+      }
+      if (arcPhase === 'end') {
+        const endAngle = Math.atan2(cursorPos.y - arcCenter.y, cursorPos.x - arcCenter.x);
+        const path = arcSvgPath(arcCenter.x, arcCenter.y, arcRadius, arcStartAngle, endAngle);
+        return (
+          <g opacity={0.7}>
+            <path d={path} stroke="hsl(var(--cad-sketch-line))" strokeWidth={0.6} strokeDasharray="2 1" fill="none" />
+            <line x1={arcCenter.x} y1={arcCenter.y}
+              x2={arcCenter.x + arcRadius * Math.cos(arcStartAngle)} y2={arcCenter.y + arcRadius * Math.sin(arcStartAngle)}
+              stroke="hsl(var(--cad-dimension))" strokeWidth={0.3} strokeDasharray="1 1" />
+            <line x1={arcCenter.x} y1={arcCenter.y} x2={cursorPos.x} y2={cursorPos.y}
+              stroke="hsl(var(--cad-dimension))" strokeWidth={0.3} strokeDasharray="1 1" />
+          </g>
+        );
+      }
+    }
+
+    if (activeTool === 'move' && moveStart) {
+      return (
+        <g opacity={0.5}>
+          <line x1={moveStart.x} y1={moveStart.y} x2={cursorPos.x} y2={cursorPos.y}
+            stroke="hsl(var(--cad-snap))" strokeWidth={0.5} strokeDasharray="2 1" />
+          <circle cx={moveStart.x} cy={moveStart.y} r={1.5} fill="none" stroke="hsl(var(--cad-snap))" strokeWidth={0.3} />
+        </g>
+      );
+    }
+
+    if (activeTool === 'mirror' && mirrorAxis1 && mirrorPhase === 'axis2') {
+      return (
+        <line x1={mirrorAxis1.x} y1={mirrorAxis1.y} x2={cursorPos.x} y2={cursorPos.y}
+          stroke="hsl(var(--cad-dimension))" strokeWidth={0.5} strokeDasharray="3 2" opacity={0.8} />
+      );
+    }
+
     return null;
   };
+
+  // Status text
+  const getStatusText = () => {
+    switch (activeTool) {
+      case 'arc':
+        if (arcPhase === 'center') return 'Arc: Click center point';
+        if (arcPhase === 'radius') return 'Arc: Click to set radius & start angle';
+        if (arcPhase === 'end') return 'Arc: Click to set end angle';
+        break;
+      case 'move':
+        if (!moveStart) return 'Move: Click base point';
+        return 'Move: Click destination';
+      case 'mirror':
+        if (mirrorPhase === 'axis1') return 'Mirror: Click first axis point';
+        return 'Mirror: Click second axis point';
+      case 'trim': return 'Trim: Click on a line segment to trim';
+      case 'extend': return 'Extend: Click near a line endpoint';
+      case 'offset': return `Offset: Click an entity (distance: ${gridSize}mm)`;
+      case 'dimension': return 'Dimension: Click an entity to edit';
+    }
+    return null;
+  };
+
+  const statusText = getStatusText();
 
   return (
     <div className="relative flex-1 overflow-hidden bg-cad-surface">
@@ -380,6 +706,13 @@ export function SketchCanvas({
       <div className="absolute bottom-3 left-3 z-10 bg-card/90 backdrop-blur border rounded px-2.5 py-1 font-mono text-xs text-muted-foreground">
         X: {cursorPos.x.toFixed(1)} &nbsp; Y: {cursorPos.y.toFixed(1)} mm
       </div>
+
+      {/* Status text */}
+      {statusText && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 bg-card/90 backdrop-blur border rounded px-3 py-1 text-xs font-medium text-muted-foreground">
+          {statusText}
+        </div>
+      )}
 
       {/* Snap indicator */}
       {snapEnabled && (
@@ -398,7 +731,6 @@ export function SketchCanvas({
         onMouseLeave={handleMouseUp}
         onWheel={handleWheel}
       >
-        {/* Grid */}
         {gridLines}
 
         {/* Origin axes */}
@@ -407,25 +739,16 @@ export function SketchCanvas({
         <line x1={0} y1={viewBox.y} x2={0} y2={viewBox.y + viewBox.h}
           stroke="hsl(var(--cad-snap))" strokeWidth={0.3} opacity={0.5} />
 
-        {/* Entities */}
         {entities.map(renderEntity)}
-
-        {/* Preview */}
         {renderPreview()}
 
         {/* Snap cursor */}
         {activeTool !== 'select' && (
           <g>
-            <line
-              x1={cursorPos.x - 3} y1={cursorPos.y}
-              x2={cursorPos.x + 3} y2={cursorPos.y}
-              stroke="hsl(var(--cad-snap))" strokeWidth={0.3}
-            />
-            <line
-              x1={cursorPos.x} y1={cursorPos.y - 3}
-              x2={cursorPos.x} y2={cursorPos.y + 3}
-              stroke="hsl(var(--cad-snap))" strokeWidth={0.3}
-            />
+            <line x1={cursorPos.x - 3} y1={cursorPos.y} x2={cursorPos.x + 3} y2={cursorPos.y}
+              stroke="hsl(var(--cad-snap))" strokeWidth={0.3} />
+            <line x1={cursorPos.x} y1={cursorPos.y - 3} x2={cursorPos.x} y2={cursorPos.y + 3}
+              stroke="hsl(var(--cad-snap))" strokeWidth={0.3} />
           </g>
         )}
       </svg>

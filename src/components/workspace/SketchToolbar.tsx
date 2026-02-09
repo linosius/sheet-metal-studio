@@ -30,21 +30,21 @@ interface ToolDef {
 const createTools: ToolDef[] = [
   { id: 'line', icon: Minus, label: 'Line', shortcut: 'L' },
   { id: 'circle', icon: Circle, label: 'Circle', shortcut: 'C' },
-  { id: 'arc', icon: Spline, label: 'Arc', shortcut: 'A', placeholder: true },
+  { id: 'arc', icon: Spline, label: 'Arc', shortcut: 'A' },
   { id: 'rect', icon: Square, label: 'Rectangle', shortcut: 'R' },
-  { id: 'point', icon: Dot, label: 'Point', shortcut: 'P', placeholder: true },
+  { id: 'point', icon: Dot, label: 'Point', shortcut: 'P' },
 ];
 
 const modifyTools: ToolDef[] = [
-  { id: 'move', icon: Move, label: 'Move', shortcut: 'M', placeholder: true },
-  { id: 'trim', icon: Scissors, label: 'Trim', shortcut: 'T', placeholder: true },
-  { id: 'extend', icon: ArrowRightFromLine, label: 'Extend', placeholder: true },
-  { id: 'offset', icon: CopyMinus, label: 'Offset', placeholder: true },
-  { id: 'mirror', icon: FlipHorizontal2, label: 'Mirror', placeholder: true },
+  { id: 'move', icon: Move, label: 'Move', shortcut: 'M' },
+  { id: 'trim', icon: Scissors, label: 'Trim', shortcut: 'T' },
+  { id: 'extend', icon: ArrowRightFromLine, label: 'Extend' },
+  { id: 'offset', icon: CopyMinus, label: 'Offset' },
+  { id: 'mirror', icon: FlipHorizontal2, label: 'Mirror' },
 ];
 
 const dimensionTools: ToolDef[] = [
-  { id: 'dimension', icon: Ruler, label: 'Dimension', shortcut: 'D', placeholder: true },
+  { id: 'dimension', icon: Ruler, label: 'Dimension', shortcut: 'D' },
 ];
 
 const GRID_OPTIONS = [1, 2, 5, 10, 20, 50];
@@ -67,14 +67,9 @@ function ToolGroup({ label, tools, activeTool, onToolChange }: {
                 className={cn(
                   'h-8 w-8',
                   activeTool === tool.id && 'shadow-sm',
-                  tool.placeholder && 'opacity-60',
                 )}
                 onClick={() => {
-                  if (tool.placeholder) {
-                    toast.info(`${tool.label} — coming soon`);
-                  } else {
-                    onToolChange(tool.id as SketchTool);
-                  }
+                  onToolChange(tool.id as SketchTool);
                 }}
               >
                 <tool.icon className="h-4 w-4" />
