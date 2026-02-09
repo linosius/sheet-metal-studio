@@ -1,6 +1,6 @@
 import { Point2D } from '@/lib/sheetmetal';
 import { bendAllowance } from '@/lib/sheetmetal';
-import { Flange, Fold, getFoldNormal, clipPolygonByLine, foldLineToInnerEdgeOffset, getFixedProfile } from '@/lib/geometry';
+import { Flange, Fold, getFoldNormal, clipPolygonByLine, foldLineToInnerEdgeOffset, getFixedProfile, isBaseFaceFold } from '@/lib/geometry';
 
 // ========== Flat Pattern Types ==========
 
@@ -100,11 +100,9 @@ export function computeFlatPattern(
 
   let bendIndex = 1;
 
-  // ---- Process folds: add bend lines only (no displaced regions) ----
-  // Folds bend existing material, so the flat pattern keeps the original
-  // base face dimensions. We only draw bend line annotations at the
-  // ORIGINAL drawn fold line position (not shifted by foldLocation offset).
-  for (const fold of folds) {
+  // ---- Process base-face folds: add bend lines only ----
+  const baseFolds = folds.filter(f => isBaseFaceFold(f));
+  for (const fold of baseFolds) {
     const normal = getFoldNormal(fold, faceWidth, faceHeight);
     const BA = bendAllowance(fold.bendRadius, kFactor, thickness, fold.angle);
 

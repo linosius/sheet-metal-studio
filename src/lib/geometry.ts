@@ -388,8 +388,9 @@ export function getAllSelectableEdges(
   const edgeMap = new Map<string, PartEdge>();
   baseEdges.forEach(e => edgeMap.set(e.id, e));
 
-  // Process folds to add their tip/side edges (edges on folded faces)
-  for (const fold of folds) {
+  // Process only base-face folds to add their tip/side edges
+  const baseFoldsForEdges = folds.filter(f => isBaseFaceFold(f));
+  for (const fold of baseFoldsForEdges) {
     const foldEdge = computeFoldEdge(profile, thickness, fold);
     const { startHeight, endHeight } = getFoldMovingHeights(profile, fold, thickness);
     const tipEdges = computeFoldTipEdges(
@@ -836,7 +837,9 @@ export function computeFoldEdge(
  * Uses Sutherland-Hodgman polygon clipping against each fold line.
  */
 export function getFixedProfile(profile: Point2D[], folds: Fold[], thickness: number = 0): Point2D[] {
-  if (folds.length === 0) return profile;
+  // Only base-face folds clip the base profile
+  const baseFolds = folds.filter(f => isBaseFaceFold(f));
+  if (baseFolds.length === 0) return profile;
 
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
@@ -847,9 +850,8 @@ export function getFixedProfile(profile: Point2D[], folds: Fold[], thickness: nu
 
   let clipped = [...profile];
 
-  for (const fold of folds) {
+  for (const fold of baseFolds) {
     const normal = getFoldNormal(fold, faceWidth, faceHeight);
-    // Shift clip point from drawn fold line to inner edge (toward fixed side)
     const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
     const linePoint: Point2D = {
       x: minX + fold.lineStart.x - normal.x * off,
@@ -1499,7 +1501,7 @@ export function computeStressReliefs(
     bottom: 0, right: 1, top: 2, left: 3,
   };
 
-  for (const fold of folds) {
+  for (const fold of folds.filter(f => isBaseFaceFold(f))) {
     const rw = thickness;
     const rd = fold.bendRadius + thickness;
 
@@ -1531,6 +1533,9 @@ export function getFoldParentId(
   allFolds: Fold[],
   profile: Point2D[],
 ): string | null {
+  // Only base-face folds participate in hierarchical parent detection
+  if (!isBaseFaceFold(fold)) return null;
+
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -1546,10 +1551,10 @@ export function getFoldParentId(
 
   for (const other of allFolds) {
     if (other.id === fold.id) continue;
+    if (!isBaseFaceFold(other)) continue;
     const otherNorm = getFoldNormal(other, faceW, faceH);
     const otherFs = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
 
-    // Is this fold's midpoint on the other fold's moving side?
     const dot = (foldMidX - otherFs.x) * otherNorm.x + (foldMidY - otherFs.y) * otherNorm.y;
     if (dot > 1) {
       const otherNegN = { x: -otherNorm.x, y: -otherNorm.y };
@@ -1563,4 +1568,120 @@ export function getFoldParentId(
   }
 
   return bestParent?.id ?? null;
+}
+
+// ========== Non-Base Face Fold Helpers ==========
+
+/**
+ * Check if a fold is on the base face (top or bottom).
+ */
+export function isBaseFaceFold(fold: Fold): boolean {
+  return !fold.faceId || fold.faceId === 'base_top' || fold.faceId === 'base_bot';
+}
+
+/**
+ * Get the dimensions (width, height) of a face by its ID.
+ */
+export function getFaceDimensions(
+  faceId: string,
+  profile: Point2D[],
+  thickness: number,
+  flanges: Flange[],
+  folds: Fold[],
+): { width: number; height: number } | null {
+  if (faceId === 'base_top' || faceId === 'base_bot') {
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
+  }
+  if (faceId.startsWith('flange_face_')) {
+    const flangeId = faceId.replace('flange_face_', '');
+    const flange = flanges.find(f => f.id === flangeId);
+    if (!flange) return null;
+    const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds);
+    const parentEdge = allEdges.find(e => e.id === flange.edgeId);
+    if (!parentEdge) return null;
+    return { width: parentEdge.start.distanceTo(parentEdge.end), height: flange.height };
+  }
+  if (faceId.startsWith('fold_face_')) {
+    const foldId = faceId.replace('fold_face_', '');
+    const fold = folds.find(f => f.id === foldId);
+    if (!fold) return null;
+    const foldEdge = computeFoldEdge(profile, thickness, fold);
+    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold, thickness);
+    return { width: foldEdge.start.distanceTo(foldEdge.end), height: Math.max(startHeight, endHeight) };
+  }
+  return null;
+}
+
+/**
+ * Create a simple rectangular profile for virtual face geometry.
+ */
+export function makeVirtualProfile(width: number, height: number): Point2D[] {
+  return [
+    { x: 0, y: 0 },
+    { x: width, y: 0 },
+    { x: width, y: height },
+    { x: 0, y: height },
+  ];
+}
+
+/**
+ * Compute the 3D transformation matrix for a flange face.
+ * Maps from face-local coordinates (x=along edge, y=along extension, z=surface normal)
+ * to world coordinates. Origin is at the inner surface.
+ */
+export function computeFlangeFaceTransform(
+  parentEdge: PartEdge,
+  flange: Flange,
+  thickness: number,
+): THREE.Matrix4 {
+  const bendAngleRad = (flange.angle * Math.PI) / 180;
+  const dirSign = flange.direction === 'up' ? 1 : -1;
+  const R = flange.bendRadius;
+  const uDir = parentEdge.normal.clone().normalize();
+  const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+  const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
+
+  const sinA = Math.sin(bendAngleRad);
+  const cosA = Math.cos(bendAngleRad);
+  const arcEndU = R * sinA;
+  const arcEndW = R * (1 - cosA);
+
+  const flangeExtDir = uDir.clone().multiplyScalar(cosA).add(wDir.clone().multiplyScalar(sinA)).normalize();
+  const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
+
+  // Origin at inner surface of flange (no thickness offset)
+  const origin = parentEdge.start.clone()
+    .add(uDir.clone().multiplyScalar(arcEndU))
+    .add(wDir.clone().multiplyScalar(arcEndW));
+
+  const m = new THREE.Matrix4();
+  m.makeBasis(edgeDir, flangeExtDir, flangeSurfaceNormal);
+  m.setPosition(origin);
+  return m;
+}
+
+/**
+ * Compute the 3D transformation matrix for a fold face.
+ * Maps from face-local coordinates to world coordinates. Origin is at the inner surface.
+ */
+export function computeFoldFaceTransform(
+  profile: Point2D[],
+  fold: Fold,
+  thickness: number,
+): THREE.Matrix4 {
+  const foldEdge = computeFoldEdge(profile, thickness, fold);
+  const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
+  const normal = foldEdge.normal.clone();
+  const dSign = fold.direction === 'up' ? 1 : -1;
+  const angleRad = fold.angle * Math.PI / 180;
+  const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
+  const bentNormal = normal.clone().applyQuaternion(q);
+  const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
+
+  const m = new THREE.Matrix4();
+  m.makeBasis(tangent, bentNormal, bentUp);
+  m.setPosition(foldEdge.start);
+  return m;
 }

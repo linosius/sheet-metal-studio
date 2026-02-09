@@ -11,6 +11,8 @@ import {
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
   getFixedProfile, computeFoldEdge, getFoldParentId,
+  isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
+  getFaceDimensions,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -315,13 +317,16 @@ function SheetMetalMesh({
 
   const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
 
+  const baseFolds = useMemo(() => folds.filter(f => isBaseFaceFold(f)), [folds]);
+  const nonBaseFolds = useMemo(() => folds.filter(f => !isBaseFaceFold(f)), [folds]);
+
   const nonSelectableEdgeIds = useMemo(() => {
     const ids = new Set<string>();
-    // Mark explicit fold edges
-    folds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
+    // Mark explicit fold edges (base folds only)
+    baseFolds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
     // Mark fixed profile edges that geometrically correspond to fold lines
     for (const edge of edges) {
-      if (isEdgeOnFoldLine(edge, folds, profile)) {
+      if (isEdgeOnFoldLine(edge, baseFolds, profile)) {
         ids.add(edge.id);
       }
     }
@@ -332,18 +337,15 @@ function SheetMetalMesh({
         ids.add(edge.id);
       }
     }
-    // Mark edges that are collinear with any fold's inner edge (clipped profile edges at fold boundaries)
-    for (const fold of folds) {
+    // Mark edges that are collinear with any base fold's inner edge
+    for (const fold of baseFolds) {
       const foldEdge = computeFoldEdge(profile, thickness, fold);
       const foldDir = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
       for (const edge of edges) {
-        // Skip already marked edges
         if (ids.has(edge.id)) continue;
-        // Check if edge is collinear with fold edge (same direction, same line)
         const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
         const cross = Math.abs(foldDir.x * edgeDir.y - foldDir.y * edgeDir.x);
-        if (cross > 0.05) continue; // not parallel
-        // Check if edge midpoint lies on the fold line
+        if (cross > 0.05) continue;
         const mid = edge.start.clone().add(edge.end).multiplyScalar(0.5);
         const toMid = new THREE.Vector3().subVectors(mid, foldEdge.start);
         const perpDist = Math.abs(toMid.x * (-foldDir.y) + toMid.y * foldDir.x);
@@ -353,7 +355,7 @@ function SheetMetalMesh({
       }
     }
     return ids;
-  }, [folds, edges, profile, thickness]);
+  }, [baseFolds, edges, profile, thickness]);
 
   // Only render base face entities in 3D (fold face entities need separate transform)
   const allEntities = useMemo(() => {
@@ -704,8 +706,8 @@ function SheetMetalMesh({
         );
       })}
 
-      {/* Render folds — child folds get parent's bend transform applied */}
-      {folds.map((fold, i) => {
+      {/* Render base-face folds — child folds get parent's bend transform applied */}
+      {baseFolds.map((fold, i) => {
         const parentId = getFoldParentId(fold, folds, profile);
         const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
 
@@ -713,7 +715,7 @@ function SheetMetalMesh({
           <FoldMesh
             profile={profile}
             fold={fold}
-            otherFolds={folds.filter((_, j) => j !== i)}
+            otherFolds={baseFolds.filter((_, j) => j !== i)}
             thickness={thickness}
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
@@ -727,13 +729,10 @@ function SheetMetalMesh({
           const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
           const R = parentFold.bendRadius;
 
-          // Center of curvature = inner edge + R along face normal direction
-          // Matches the arc formula in createFoldMesh where center is at O + R*W3
           const pivot = parentEdge.start.clone().add(
             parentEdge.faceNormal.clone().multiplyScalar(R)
           );
 
-          // Angle sign from triple product: ensures rotation direction matches arc parameterization
           const crossUW = new THREE.Vector3().crossVectors(parentEdge.normal, parentEdge.faceNormal);
           const signFactor = Math.sign(crossUW.dot(axis));
           const angleRad = signFactor * (parentFold.angle * Math.PI / 180);
@@ -749,6 +748,50 @@ function SheetMetalMesh({
         }
 
         return <group key={fold.id}>{mesh}</group>;
+      })}
+
+      {/* Render non-base-face folds with virtual profile + transform */}
+      {nonBaseFolds.map((fold) => {
+        const faceId = fold.faceId!;
+        const faceDims = getFaceDimensions(faceId, profile, thickness, flanges, folds);
+        if (!faceDims) return null;
+
+        const virtualProfile = makeVirtualProfile(faceDims.width, faceDims.height);
+
+        // Compute transform from virtual XY space to world coordinates
+        let transform: THREE.Matrix4 | null = null;
+        if (faceId.startsWith('flange_face_')) {
+          const flangeId = faceId.replace('flange_face_', '');
+          const flange = flanges.find(f => f.id === flangeId);
+          if (!flange) return null;
+          const parentEdge = edges.find(e => e.id === flange.edgeId);
+          if (!parentEdge) return null;
+          transform = computeFlangeFaceTransform(parentEdge, flange, thickness);
+        } else if (faceId.startsWith('fold_face_')) {
+          const parentFoldId = faceId.replace('fold_face_', '');
+          const parentFold = folds.find(f => f.id === parentFoldId);
+          if (!parentFold) return null;
+          transform = computeFoldFaceTransform(profile, parentFold, thickness);
+        }
+        if (!transform) return null;
+
+        // Same-face folds for clipping
+        const sameFaceFolds = nonBaseFolds.filter(f => f.faceId === faceId && f.id !== fold.id);
+
+        return (
+          <group key={fold.id} matrixAutoUpdate={false} matrix={transform}>
+            <FoldMesh
+              profile={virtualProfile}
+              fold={fold}
+              otherFolds={sameFaceFolds}
+              thickness={thickness}
+              isSketchMode={isSketchMode}
+              onFaceClick={onFaceClick}
+              showLines={!isViewMode && !isEdgeMode}
+              activeSketchFaceId={activeSketchFaceId}
+            />
+          </group>
+        );
       })}
     </group>
   );
