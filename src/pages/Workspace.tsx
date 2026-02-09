@@ -20,6 +20,7 @@ import {
   FaceSketchLine, FaceSketchEntity, FaceSketchTool, classifySketchLineAsFold,
   getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine,
   computeFoldEdge, getFoldMovingHeights, getFaceDimensions,
+  ProfileCutout, circleToPolygon, rectToPolygon,
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
@@ -32,7 +33,7 @@ export default function Workspace() {
 
   // 3D state
   const [profile, setProfile] = useState<Point2D[] | null>(null);
-  const [cutouts, setCutouts] = useState<{ center: Point2D; radius: number }[]>([]);
+  const [cutouts, setCutouts] = useState<import('@/lib/geometry').ProfileCutout[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   // Action history (replaces individual flanges/folds/faceSketches state)
@@ -63,13 +64,100 @@ export default function Workspace() {
       });
       return;
     }
-    // Extract circles as cutouts
-    const circles = sketch.entities
-      .filter(e => e.type === 'circle')
-      .map(e => e.type === 'circle' ? { center: e.center, radius: e.radius } : null)
-      .filter(Boolean) as { center: Point2D; radius: number }[];
+    // Extract all interior shapes as cutouts
+    const extractedCutouts: ProfileCutout[] = [];
+
+    // Circles
+    for (const e of sketch.entities) {
+      if (e.type === 'circle') {
+        extractedCutouts.push({
+          type: 'circle',
+          center: e.center,
+          radius: e.radius,
+          polygon: circleToPolygon(e.center, e.radius),
+        });
+      }
+    }
+
+    // Rectangles (not the profile rect itself)
+    const rects = sketch.entities.filter(e => e.type === 'rect');
+    for (const e of rects) {
+      if (e.type !== 'rect') continue;
+      // Skip if this rect IS the profile
+      const isProfile = p.length === 4 &&
+        Math.abs(p[0].x - e.origin.x) < 0.5 && Math.abs(p[0].y - e.origin.y) < 0.5 &&
+        Math.abs(p[2].x - (e.origin.x + e.width)) < 0.5 && Math.abs(p[2].y - (e.origin.y + e.height)) < 0.5;
+      if (isProfile) continue;
+      extractedCutouts.push({
+        type: 'rect',
+        origin: e.origin,
+        width: e.width,
+        height: e.height,
+        polygon: rectToPolygon(e.origin, e.width, e.height),
+      });
+    }
+
+    // Closed line loops (lines not used by the profile)
+    const profileLines = sketch.entities.filter(e => e.type === 'line');
+    const usedLineIds = new Set<string>();
+    // Try to find closed loops from remaining lines
+    const remainingLines = profileLines.filter(e => e.type === 'line' && !usedLineIds.has(e.id));
+    const tolerance = 1.0;
+    const foundLoops: Point2D[][] = [];
+    const globalUsed = new Set<string>();
+
+    for (const startLine of remainingLines) {
+      if (globalUsed.has(startLine.id) || startLine.type !== 'line') continue;
+      const loopPts: Point2D[] = [startLine.start, startLine.end];
+      const loopUsed = new Set([startLine.id]);
+      let closed = false;
+      let maxIter = remainingLines.length * 2;
+
+      while (!closed && maxIter > 0) {
+        maxIter--;
+        const last = loopPts[loopPts.length - 1];
+        let found = false;
+        for (const line of remainingLines) {
+          if (loopUsed.has(line.id) || globalUsed.has(line.id) || line.type !== 'line') continue;
+          const dS = Math.hypot(line.start.x - last.x, line.start.y - last.y);
+          const dE = Math.hypot(line.end.x - last.x, line.end.y - last.y);
+          if (dS < tolerance) {
+            const dClose = Math.hypot(line.end.x - loopPts[0].x, line.end.y - loopPts[0].y);
+            if (dClose < tolerance && loopUsed.size >= 2) { closed = true; }
+            else { loopPts.push(line.end); }
+            loopUsed.add(line.id);
+            found = true;
+            break;
+          } else if (dE < tolerance) {
+            const dClose = Math.hypot(line.start.x - loopPts[0].x, line.start.y - loopPts[0].y);
+            if (dClose < tolerance && loopUsed.size >= 2) { closed = true; }
+            else { loopPts.push(line.start); }
+            loopUsed.add(line.id);
+            found = true;
+            break;
+          }
+        }
+        if (!found) break;
+      }
+
+      if (closed && loopPts.length >= 3) {
+        // Check if this loop is the profile itself
+        const isProfileLoop = loopPts.length === p.length && loopPts.every((lp, idx) =>
+          Math.hypot(lp.x - p[idx].x, lp.y - p[idx].y) < tolerance
+        );
+        if (!isProfileLoop) {
+          foundLoops.push(loopPts);
+          loopUsed.forEach(id => globalUsed.add(id));
+        }
+      }
+    }
+
+    for (const loop of foundLoops) {
+      extractedCutouts.push({ type: 'polygon', polygon: loop });
+    }
+
     setProfile(p);
-    setCutouts(circles);
+    setCutouts(extractedCutouts);
     history.pushAction('Base Face Created', 'base-face', { flanges: [], folds: [], faceSketches: [] });
     setSelectedEdgeId(null);
     setSelectedSketchLineId(null);
@@ -78,7 +166,7 @@ export default function Workspace() {
     setSketchSelectedIds([]);
     setCurrentStep('fold-flanges');
     toast.success('Base face created', {
-      description: `Profile with ${p.length} vertices${circles.length > 0 ? `, ${circles.length} cutout(s)` : ''}, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
+      description: `Profile with ${p.length} vertices${extractedCutouts.length > 0 ? `, ${extractedCutouts.length} cutout(s)` : ''}, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
     });
   }, [sketch.entities, sketch.sheetMetalDefaults.thickness, history]);
 

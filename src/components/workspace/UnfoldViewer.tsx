@@ -1,6 +1,6 @@
 import { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { Point2D } from '@/lib/sheetmetal';
-import { Flange, Fold } from '@/lib/geometry';
+import { Flange, Fold, ProfileCutout } from '@/lib/geometry';
 import { computeFlatPattern, FlatPattern } from '@/lib/unfold';
 import { ZoomIn, ZoomOut, Maximize } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -11,7 +11,7 @@ interface UnfoldViewerProps {
   flanges: Flange[];
   kFactor: number;
   folds?: Fold[];
-  cutouts?: { center: Point2D; radius: number }[];
+  cutouts?: ProfileCutout[];
 }
 
 const PADDING = 40;
@@ -202,17 +202,34 @@ export function UnfoldViewer({ profile, thickness, flanges, kFactor, folds = [],
           })}
 
           {/* Cutout holes */}
-          {cutouts.map((cutout, idx) => (
-            <circle
-              key={`cutout-${idx}`}
-              cx={cutout.center.x}
-              cy={cutout.center.y}
-              r={cutout.radius}
-              fill="hsl(var(--cad-surface))"
-              stroke="hsl(var(--foreground))"
-              strokeWidth={1.5 / finalScale}
-            />
-          ))}
+          {cutouts.map((cutout, idx) => {
+            if (cutout.type === 'circle' && cutout.center && cutout.radius) {
+              return (
+                <circle
+                  key={`cutout-${idx}`}
+                  cx={cutout.center.x}
+                  cy={cutout.center.y}
+                  r={cutout.radius}
+                  fill="hsl(var(--cad-surface))"
+                  stroke="hsl(var(--foreground))"
+                  strokeWidth={1.5 / finalScale}
+                />
+              );
+            }
+            // Polygon-based cutouts (rect, polygon, or circle fallback)
+            const pts = cutout.polygon;
+            if (!pts || pts.length < 3) return null;
+            const d = pts.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ') + ' Z';
+            return (
+              <path
+                key={`cutout-${idx}`}
+                d={d}
+                fill="hsl(var(--cad-surface))"
+                stroke="hsl(var(--foreground))"
+                strokeWidth={1.5 / finalScale}
+              />
+            );
+          })}
 
           {/* Bend lines (dashed, in pairs) */}
           {pattern.bendLines.map((bl, idx) => (

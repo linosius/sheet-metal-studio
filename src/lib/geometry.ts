@@ -129,27 +129,57 @@ export function profileToShape(profile: Point2D[]): THREE.Shape {
   return shape;
 }
 
-/** A circular cutout in the base face */
+/** A cutout (hole) in the base face — supports circles, rects, and arbitrary polygons */
 export interface ProfileCutout {
-  center: Point2D;
-  radius: number;
+  type: 'circle' | 'rect' | 'polygon';
+  center?: Point2D;
+  radius?: number;
+  origin?: Point2D;
+  width?: number;
+  height?: number;
+  /** Polygon approximation used for clipping operations */
+  polygon: Point2D[];
+}
+
+/** Convert a circle to a polygon approximation */
+export function circleToPolygon(center: Point2D, radius: number, segments = 32): Point2D[] {
+  const pts: Point2D[] = [];
+  for (let i = 0; i < segments; i++) {
+    const a = (i / segments) * Math.PI * 2;
+    pts.push({ x: center.x + Math.cos(a) * radius, y: center.y + Math.sin(a) * radius });
+  }
+  return pts;
+}
+
+/** Convert a rectangle to a polygon */
+export function rectToPolygon(origin: Point2D, width: number, height: number): Point2D[] {
+  return [
+    { x: origin.x, y: origin.y },
+    { x: origin.x + width, y: origin.y },
+    { x: origin.x + width, y: origin.y + height },
+    { x: origin.x, y: origin.y + height },
+  ];
 }
 
 /**
- * Create an extruded mesh from a profile and thickness, with optional circular cutouts.
+ * Create an extruded mesh from a profile and thickness, with optional polygon cutouts (holes).
  */
 export function createBaseFaceMesh(
   profile: Point2D[],
   thickness: number,
-  cutouts?: ProfileCutout[],
+  cutoutPolygons?: Point2D[][],
 ): THREE.BufferGeometry {
   const shape = profileToShape(profile);
 
-  // Add circular holes for each cutout
-  if (cutouts && cutouts.length > 0) {
-    for (const cutout of cutouts) {
+  if (cutoutPolygons && cutoutPolygons.length > 0) {
+    for (const poly of cutoutPolygons) {
+      if (poly.length < 3) continue;
       const holePath = new THREE.Path();
-      holePath.absarc(cutout.center.x, cutout.center.y, cutout.radius, 0, Math.PI * 2, true);
+      holePath.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) {
+        holePath.lineTo(poly[i].x, poly[i].y);
+      }
+      holePath.closePath();
       shape.holes.push(holePath);
     }
   }
@@ -885,6 +915,77 @@ export function clipPolygonByLine(
   return result;
 }
 
+/**
+ * Get the fixed-side portions of cutouts (clipped by all base-face fold lines).
+ * Returns polygon arrays suitable for passing to createBaseFaceMesh.
+ */
+export function getFixedCutouts(
+  cutouts: ProfileCutout[],
+  folds: Fold[],
+  profile: Point2D[],
+  thickness: number,
+): Point2D[][] {
+  const baseFolds = folds.filter(f => isBaseFaceFold(f));
+  if (baseFolds.length === 0) return cutouts.map(c => c.polygon);
+
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const faceW = Math.max(...xs) - minX;
+  const faceH = Math.max(...ys) - minY;
+
+  const result: Point2D[][] = [];
+  for (const cutout of cutouts) {
+    let poly = [...cutout.polygon];
+    for (const fold of baseFolds) {
+      const norm = getFoldNormal(fold, faceW, faceH);
+      const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+      const linePoint = {
+        x: minX + fold.lineStart.x - norm.x * off,
+        y: minY + fold.lineStart.y - norm.y * off,
+      };
+      poly = clipPolygonByLine(poly, linePoint, norm);
+    }
+    if (poly.length >= 3) result.push(poly);
+  }
+  return result;
+}
+
+/**
+ * Get the moving-side portions of cutouts for a specific fold.
+ * Returns polygon arrays in world coordinates.
+ */
+export function getMovingCutouts(
+  cutouts: ProfileCutout[],
+  fold: Fold,
+  profile: Point2D[],
+  thickness: number,
+): Point2D[][] {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const faceW = Math.max(...xs) - minX;
+  const faceH = Math.max(...ys) - minY;
+
+  const norm = getFoldNormal(fold, faceW, faceH);
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const linePoint = {
+    x: minX + fold.lineStart.x - norm.x * off,
+    y: minY + fold.lineStart.y - norm.y * off,
+  };
+
+  const negN = { x: -norm.x, y: -norm.y };
+
+  const result: Point2D[][] = [];
+  for (const cutout of cutouts) {
+    const poly = clipPolygonByLine([...cutout.polygon], linePoint, negN);
+    if (poly.length >= 3) result.push(poly);
+  }
+  return result;
+}
+
 export interface StressRelief {
   position: Point2D;
   width: number;
@@ -1091,6 +1192,7 @@ export function createFoldMesh(
   otherFolds: Fold[],
   thickness: number,
   childFolds?: Fold[],
+  movingCutouts?: Point2D[][],
 ): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
@@ -1362,7 +1464,7 @@ export function createFoldMesh(
   arcGeo.setAttribute('normal', new THREE.Float32BufferAttribute(arcNormals, 3));
   arcGeo.setIndex(arcIdx);
 
-  // ═══════ TIP GEOMETRY — explicit normals matching arc convention ═══════
+  // ═══════ TIP GEOMETRY — ShapeGeometry-based triangulation with hole support ═══════
   const tipVerts: number[] = [];
   const tipNormals: number[] = [];
   const tipIdx: number[] = [];
@@ -1380,28 +1482,78 @@ export function createFoldMesh(
   const nTipOuter = U3.clone().multiplyScalar(sinA)
     .add(W3.clone().multiplyScalar(-cosA));
 
-  // Adjust tip fold-line vertices to match arc's tapered end at θ=A
+  // Taper adjustment for fold-line vertices
   const arcEndStep = arcSteps[ARC_N];
   const tL_end = arcEndStep.tLI;
   const tR_end = arcEndStep.tRI;
-  const tipLocs = locs.map(l => {
-    if (l.d < DTOL && tMax > tMin) {
-      const frac = (l.t - tMin) / (tMax - tMin);
-      return { t: tL_end + frac * (tR_end - tL_end), d: l.d };
+  function taperT(t: number, d: number): number {
+    if (d < DTOL && tMax > tMin) {
+      const frac = (t - tMin) / (tMax - tMin);
+      return tL_end + frac * (tR_end - tL_end);
     }
-    return l;
-  });
-
-  const tI = tipLocs.map(l => addTipV(tipInner(l.t, l.d), nTipInner));
-  const tO = tipLocs.map(l => addTipV(tipOuter(l.t, l.d), nTipOuter));
-
-  // Inner and outer surface fans
-  for (let i = 1; i < tI.length - 1; i++) {
-    tipIdx.push(tI[0], tI[i], tI[i + 1]);
-    tipIdx.push(tO[0], tO[i + 1], tO[i]);
+    return t;
   }
 
-  // Side strips — separate vertices with per-face side normals
+  // Build shape in (t,d) space for triangulation
+  const tipShape = new THREE.Shape();
+  tipShape.moveTo(locs[0].t, locs[0].d);
+  for (let i = 1; i < locs.length; i++) {
+    tipShape.lineTo(locs[i].t, locs[i].d);
+  }
+  tipShape.closePath();
+
+  // Add cutout holes in (t,d) space
+  const holeLocs: { t: number; d: number }[][] = [];
+  if (movingCutouts && movingCutouts.length > 0) {
+    for (const cutPoly of movingCutouts) {
+      const cutLocs = cutPoly.map(p => toLocal(p));
+      if (cutLocs.length < 3) continue;
+      const holePath = new THREE.Path();
+      holePath.moveTo(cutLocs[0].t, cutLocs[0].d);
+      for (let i = 1; i < cutLocs.length; i++) {
+        holePath.lineTo(cutLocs[i].t, cutLocs[i].d);
+      }
+      holePath.closePath();
+      tipShape.holes.push(holePath);
+      holeLocs.push(cutLocs);
+    }
+  }
+
+  // Triangulate using ShapeGeometry
+  const shapeGeo = new THREE.ShapeGeometry(tipShape);
+  const shapePos = shapeGeo.attributes.position;
+  const shapeIdx = shapeGeo.index;
+
+  // Inner face
+  const innerBase = tipVi;
+  for (let i = 0; i < shapePos.count; i++) {
+    const t = taperT(shapePos.getX(i), shapePos.getY(i));
+    const d = shapePos.getY(i);
+    addTipV(tipInner(t, d), nTipInner);
+  }
+  if (shapeIdx) {
+    for (let i = 0; i < shapeIdx.count; i += 3) {
+      tipIdx.push(innerBase + shapeIdx.getX(i), innerBase + shapeIdx.getX(i + 1), innerBase + shapeIdx.getX(i + 2));
+    }
+  }
+
+  // Outer face (reverse winding)
+  const outerBase = tipVi;
+  for (let i = 0; i < shapePos.count; i++) {
+    const t = taperT(shapePos.getX(i), shapePos.getY(i));
+    const d = shapePos.getY(i);
+    addTipV(tipOuter(t, d), nTipOuter);
+  }
+  if (shapeIdx) {
+    for (let i = 0; i < shapeIdx.count; i += 3) {
+      tipIdx.push(outerBase + shapeIdx.getX(i), outerBase + shapeIdx.getX(i + 2), outerBase + shapeIdx.getX(i + 1));
+    }
+  }
+
+  shapeGeo.dispose();
+
+  // Side strips — outer polygon boundary
+  const tipLocs = locs.map(l => ({ t: taperT(l.t, l.d), d: l.d }));
   for (let i = 0; i < tipLocs.length; i++) {
     const j = (i + 1) % tipLocs.length;
     if (tipLocs[i].d < DTOL && tipLocs[j].d < DTOL) continue;
@@ -1420,6 +1572,27 @@ export function createFoldMesh(
     const sOJ = addTipV(pOJ, sideN);
     const sOI = addTipV(pOI, sideN);
     tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+  }
+
+  // Side strips — hole boundaries
+  for (const hLocs of holeLocs) {
+    for (let i = 0; i < hLocs.length; i++) {
+      const j = (i + 1) % hLocs.length;
+      const pII = tipInner(hLocs[i].t, hLocs[i].d);
+      const pIJ = tipInner(hLocs[j].t, hLocs[j].d);
+      const pOI = tipOuter(hLocs[i].t, hLocs[i].d);
+      const pOJ = tipOuter(hLocs[j].t, hLocs[j].d);
+
+      const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+      const e2 = new THREE.Vector3().subVectors(pOI, pII);
+      const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+      const sII = addTipV(pII, sideN);
+      const sIJ = addTipV(pIJ, sideN);
+      const sOJ = addTipV(pOJ, sideN);
+      const sOI = addTipV(pOI, sideN);
+      tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+    }
   }
 
   const tipGeo = new THREE.BufferGeometry();
