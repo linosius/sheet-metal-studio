@@ -29,11 +29,14 @@ interface SheetMetalMeshProps {
   activeSketchFaceId?: string | null;
 }
 
-function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLines = true }: {
+const noopRaycast = () => {};
+
+function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLines = true, activeSketchFaceId }: {
   edge: PartEdge; flange: Flange; thickness: number;
   isSketchMode?: boolean; onFaceClick?: (faceId: string) => void;
-  showLines?: boolean;
+  showLines?: boolean; activeSketchFaceId?: string | null;
 }) {
+  const isActiveSketch = activeSketchFaceId === `flange_face_${flange.id}`;
   const [hovered, setHovered] = useState(false);
   const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
   const edgesGeo = useMemo(() => {
@@ -56,6 +59,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
       <mesh
         geometry={geometry}
         userData={{ faceId: flangeFaceId }}
+        raycast={isActiveSketch ? noopRaycast as any : undefined}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
             e.stopPropagation();
@@ -93,7 +97,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
 }
 
 function FoldMesh({
-  profile, fold, otherFolds, thickness, isSketchMode, onFaceClick, showLines = true,
+  profile, fold, otherFolds, thickness, isSketchMode, onFaceClick, showLines = true, activeSketchFaceId,
 }: {
   profile: Point2D[];
   fold: Fold;
@@ -102,7 +106,9 @@ function FoldMesh({
   isSketchMode?: boolean;
   onFaceClick?: (faceId: string) => void;
   showLines?: boolean;
+  activeSketchFaceId?: string | null;
 }) {
+  const isActiveSketch = activeSketchFaceId === `fold_face_${fold.id}`;
   const [hovered, setHovered] = useState(false);
   const result = useMemo(
     () => createFoldMesh(profile, fold, otherFolds, thickness),
@@ -157,6 +163,7 @@ function FoldMesh({
       <mesh
         geometry={result.arc}
         userData={{ faceId: foldFaceId }}
+        raycast={isActiveSketch ? noopRaycast as any : undefined}
         onClick={handleClick}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
@@ -167,6 +174,7 @@ function FoldMesh({
       <mesh
         geometry={result.tip}
         userData={{ faceId: foldFaceId }}
+        raycast={isActiveSketch ? noopRaycast as any : undefined}
         onClick={handleClick}
         onPointerOver={handlePointerOver}
         onPointerOut={handlePointerOut}
@@ -385,6 +393,7 @@ function SheetMetalMesh({
       <mesh
         geometry={geometry}
         userData={{ faceType: 'base' }}
+        raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot') ? noopRaycast as any : undefined}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
             // Skip if a fold/flange face was hit closer
@@ -528,6 +537,7 @@ function SheetMetalMesh({
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
             showLines={!isViewMode && !isEdgeMode}
+            activeSketchFaceId={activeSketchFaceId}
           />
         );
       })}
@@ -546,6 +556,7 @@ function SheetMetalMesh({
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
             showLines={!isViewMode && !isEdgeMode}
+            activeSketchFaceId={activeSketchFaceId}
           />
         );
 
