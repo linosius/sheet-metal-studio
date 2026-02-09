@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useEffect } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
@@ -526,7 +526,7 @@ function SheetMetalMesh({
 }
 
 function CameraApi({ apiRef, defaultPos, defaultTarget }: {
-  apiRef: React.MutableRefObject<{ reset: () => void }>;
+  apiRef: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void }>;
   defaultPos: [number, number, number];
   defaultTarget: [number, number, number];
 }) {
@@ -536,6 +536,16 @@ function CameraApi({ apiRef, defaultPos, defaultTarget }: {
     camera.position.set(...defaultPos);
     if (controls) {
       (controls as any).target.set(...defaultTarget);
+      (controls as any).update();
+    }
+  };
+  apiRef.current.setFrontalView = () => {
+    // Position camera directly above, looking straight down at the XY plane
+    const [tx, ty, tz] = defaultTarget;
+    const dist = Math.max(defaultPos[2] * 1.5, 200);
+    camera.position.set(tx, ty, dist);
+    if (controls) {
+      (controls as any).target.set(tx, ty, tz);
       (controls as any).update();
     }
   };
@@ -600,6 +610,8 @@ interface Viewer3DProps {
   onSketchRemoveEntity?: (id: string) => void;
   sketchSelectedIds?: string[];
   onSketchSelectEntity?: (id: string) => void;
+  // Camera control
+  cameraApiRef?: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void } | null>;
 }
 
 export function Viewer3D({
@@ -611,8 +623,9 @@ export function Viewer3D({
   sketchFaceWidth, sketchFaceHeight,
   sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
   onSketchAddEntity, onSketchRemoveEntity, sketchSelectedIds, onSketchSelectEntity,
+  cameraApiRef,
 }: Viewer3DProps) {
-  const cameraApi = useRef({ reset: () => {} });
+  const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void }>({ reset: () => {}, setFrontalView: () => {} });
 
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
@@ -631,6 +644,13 @@ export function Viewer3D({
     bounds.size * 1.2,
   ];
   const defaultTarget: [number, number, number] = [bounds.cx, bounds.cy, thickness / 2];
+
+  // Sync internal camera API to external ref
+  useEffect(() => {
+    if (cameraApiRef) {
+      cameraApiRef.current = cameraApi.current;
+    }
+  });
 
   return (
     <div className="flex-1 bg-cad-surface relative">
