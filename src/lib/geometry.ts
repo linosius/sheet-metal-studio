@@ -1389,39 +1389,116 @@ export function createFoldMesh(
     arcSteps.push({ ang, tLI: tL, tRI: tR, tLO: tL, tRO: tR });
   }
 
-  // Inner surface — smooth normals pointing toward center of curvature
-  const innerVi: [number, number][] = [];
-  for (let i = 0; i <= ARC_N; i++) {
-    const { ang, tLI, tRI } = arcSteps[i];
-    const n = U3.clone().multiplyScalar(-Math.sin(ang))
-      .add(W3.clone().multiplyScalar(Math.cos(ang)));
-    innerVi.push([
-      addArcV(arcInner(tLI, ang), n),
-      addArcV(arcInner(tRI, ang), n),
-    ]);
+  // ── Build arc as ShapeGeometry in (t, θ) parameter space with cutout holes ──
+  // Arc outline polygon in (t, θ) space
+  const arcOutlinePts: Point2D[] = [];
+  // Bottom edge: left to right at θ=0
+  arcOutlinePts.push({ x: arcSteps[0].tLI, y: 0 });
+  arcOutlinePts.push({ x: arcSteps[0].tRI, y: 0 });
+  // Right edge: bottom to top
+  for (let i = 1; i <= ARC_N; i++) {
+    arcOutlinePts.push({ x: arcSteps[i].tRI, y: arcSteps[i].ang });
   }
-  for (let i = 0; i < ARC_N; i++) {
-    const c = innerVi[i], n = innerVi[i + 1];
-    arcIdx.push(c[0], c[1], n[1], c[0], n[1], n[0]);
-  }
-
-  // Outer surface — smooth normals pointing away from center
-  const outerVi: [number, number][] = [];
-  for (let i = 0; i <= ARC_N; i++) {
-    const { ang, tLO, tRO } = arcSteps[i];
-    const n = U3.clone().multiplyScalar(Math.sin(ang))
-      .add(W3.clone().multiplyScalar(-Math.cos(ang)));
-    outerVi.push([
-      addArcV(arcOuter(tLO, ang), n),
-      addArcV(arcOuter(tRO, ang), n),
-    ]);
-  }
-  for (let i = 0; i < ARC_N; i++) {
-    const c = outerVi[i], n = outerVi[i + 1];
-    arcIdx.push(c[0], n[0], n[1], c[0], n[1], c[1]);
+  // Top edge: right to left at θ=A
+  arcOutlinePts.push({ x: arcSteps[ARC_N].tLI, y: arcSteps[ARC_N].ang });
+  // Left edge: top to bottom
+  for (let i = ARC_N - 1; i >= 1; i--) {
+    arcOutlinePts.push({ x: arcSteps[i].tLI, y: arcSteps[i].ang });
   }
 
-  // Left side surface — follows polygon left boundary with per-face normals
+  const arcShape = new THREE.Shape();
+  arcShape.moveTo(arcOutlinePts[0].x, arcOutlinePts[0].y);
+  for (let i = 1; i < arcOutlinePts.length; i++) {
+    arcShape.lineTo(arcOutlinePts[i].x, arcOutlinePts[i].y);
+  }
+  arcShape.closePath();
+
+  // Convert cutout polygons to (t, θ) space and add as holes
+  const R_neutral = R + K_FACTOR * TH;
+  const arcHoleLocs: Point2D[][] = [];
+  if (movingCutouts && movingCutouts.length > 0) {
+    for (const cutPoly of movingCutouts) {
+      const cutTTheta: Point2D[] = cutPoly.map(p => {
+        const loc = toLocal(p);
+        const theta = Math.max(0, Math.min(A, loc.d / R_neutral));
+        return { x: loc.t, y: theta };
+      });
+      if (cutTTheta.length < 3) continue;
+      // Check if any part of the cutout is actually in the arc zone
+      const hasArcPart = cutTTheta.some(p => p.y > 0.001 && p.y < A - 0.001) ||
+        (cutTTheta.some(p => p.y <= 0.001) && cutTTheta.some(p => p.y >= A - 0.001));
+      if (!hasArcPart) continue;
+      // Clip the cutout polygon to the arc region
+      let clippedArcCut = [...cutTTheta];
+      // Clip to θ >= 0
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
+      // Clip to θ <= A
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
+      // Clip to t >= tMin (approximately)
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
+      // Clip to t <= tMax (approximately)
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
+      if (clippedArcCut.length < 3) continue;
+
+      const holePath = new THREE.Path();
+      holePath.moveTo(clippedArcCut[0].x, clippedArcCut[0].y);
+      for (let i = 1; i < clippedArcCut.length; i++) {
+        holePath.lineTo(clippedArcCut[i].x, clippedArcCut[i].y);
+      }
+      holePath.closePath();
+      arcShape.holes.push(holePath);
+      arcHoleLocs.push(clippedArcCut);
+    }
+  }
+
+  // Triangulate the arc shape
+  const arcShapeGeo = new THREE.ShapeGeometry(arcShape);
+  const arcShapePos = arcShapeGeo.attributes.position;
+  const arcShapeIdx = arcShapeGeo.index;
+
+  // Inner surface — smooth normals from arc curvature
+  const innerArcBase = arcVi;
+  for (let i = 0; i < arcShapePos.count; i++) {
+    const t = arcShapePos.getX(i);
+    const theta = arcShapePos.getY(i);
+    const v = arcInner(t, theta);
+    const n = U3.clone().multiplyScalar(-Math.sin(theta))
+      .add(W3.clone().multiplyScalar(Math.cos(theta)));
+    addArcV(v, n);
+  }
+  if (arcShapeIdx) {
+    for (let i = 0; i < arcShapeIdx.count; i += 3) {
+      arcIdx.push(
+        innerArcBase + arcShapeIdx.getX(i),
+        innerArcBase + arcShapeIdx.getX(i + 1),
+        innerArcBase + arcShapeIdx.getX(i + 2),
+      );
+    }
+  }
+
+  // Outer surface — reversed winding, outward normals
+  const outerArcBase = arcVi;
+  for (let i = 0; i < arcShapePos.count; i++) {
+    const t = arcShapePos.getX(i);
+    const theta = arcShapePos.getY(i);
+    const v = arcOuter(t, theta);
+    const n = U3.clone().multiplyScalar(Math.sin(theta))
+      .add(W3.clone().multiplyScalar(-Math.cos(theta)));
+    addArcV(v, n);
+  }
+  if (arcShapeIdx) {
+    for (let i = 0; i < arcShapeIdx.count; i += 3) {
+      arcIdx.push(
+        outerArcBase + arcShapeIdx.getX(i),
+        outerArcBase + arcShapeIdx.getX(i + 2),
+        outerArcBase + arcShapeIdx.getX(i + 1),
+      );
+    }
+  }
+
+  arcShapeGeo.dispose();
+
+  // Left side surface — connecting inner to outer along left boundary
   for (let i = 0; i < ARC_N; i++) {
     const cStep = arcSteps[i], nStep = arcSteps[i + 1];
     const p0 = arcInner(cStep.tLI, cStep.ang);
@@ -1440,7 +1517,7 @@ export function createFoldMesh(
     arcIdx.push(v0, v1, v3, v0, v3, v2);
   }
 
-  // Right side surface — follows polygon right boundary with per-face normals
+  // Right side surface
   for (let i = 0; i < ARC_N; i++) {
     const cStep = arcSteps[i], nStep = arcSteps[i + 1];
     const p0 = arcInner(cStep.tRI, cStep.ang);
@@ -1457,6 +1534,27 @@ export function createFoldMesh(
     const v2 = addArcV(p2, fN);
     const v3 = addArcV(p3, fN);
     arcIdx.push(v0, v2, v3, v0, v3, v1);
+  }
+
+  // Hole side walls — connect inner to outer through each hole boundary
+  for (const holePts of arcHoleLocs) {
+    for (let i = 0; i < holePts.length; i++) {
+      const j = (i + 1) % holePts.length;
+      const pII = arcInner(holePts[i].x, holePts[i].y);
+      const pIJ = arcInner(holePts[j].x, holePts[j].y);
+      const pOI = arcOuter(holePts[i].x, holePts[i].y);
+      const pOJ = arcOuter(holePts[j].x, holePts[j].y);
+
+      const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+      const e2 = new THREE.Vector3().subVectors(pOI, pII);
+      const sN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+
+      const sII = addArcV(pII, sN);
+      const sIJ = addArcV(pIJ, sN);
+      const sOJ = addArcV(pOJ, sN);
+      const sOI = addArcV(pOI, sN);
+      arcIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+    }
   }
 
   const arcGeo = new THREE.BufferGeometry();
