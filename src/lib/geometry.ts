@@ -1420,13 +1420,14 @@ export function createFoldMesh(
     for (const cutPoly of movingCutouts) {
       const cutTTheta: Point2D[] = cutPoly.map(p => {
         const loc = toLocal(p);
-        const theta = Math.max(0, Math.min(A, loc.d / R_neutral));
+        const theta = loc.d / R_neutral; // Don't clamp — let clipPolygonByLine handle arc boundaries
         return { x: loc.t, y: theta };
       });
       if (cutTTheta.length < 3) continue;
-      // Check if any part of the cutout is actually in the arc zone
-      const hasArcPart = cutTTheta.some(p => p.y > 0.001 && p.y < A - 0.001) ||
-        (cutTTheta.some(p => p.y <= 0.001) && cutTTheta.some(p => p.y >= A - 0.001));
+      // Check if any part of the cutout overlaps the arc zone [0, A]
+      const minTheta = Math.min(...cutTTheta.map(p => p.y));
+      const maxTheta = Math.max(...cutTTheta.map(p => p.y));
+      const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
       if (!hasArcPart) continue;
       // Clip the cutout polygon to the arc region
       let clippedArcCut = [...cutTTheta];
