@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { GitBranch } from 'lucide-react';
 import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine, Undo2, Redo2 } from 'lucide-react';
 import { ExportPanel } from '@/components/workspace/ExportPanel';
 import { Button } from '@/components/ui/button';
@@ -11,6 +12,7 @@ import { Viewer3D } from '@/components/workspace/Viewer3D';
 import { UnfoldViewer } from '@/components/workspace/UnfoldViewer';
 import { FaceSketchToolbar } from '@/components/workspace/FaceSketchToolbar';
 import { FoldDialog } from '@/components/workspace/FoldDialog';
+import { ActionTree } from '@/components/workspace/ActionTree';
 import { useSketchStore } from '@/hooks/useSketchStore';
 import { useActionHistory } from '@/hooks/useActionHistory';
 import {
@@ -652,49 +654,67 @@ export default function Workspace() {
             />
           )}
 
-          {/* 3D Viewer */}
+          {/* 3D Viewer with history sidebar */}
           {is3DStep && profile && (
-            <Viewer3D
-              profile={profile}
-              thickness={sketch.sheetMetalDefaults.thickness}
-              selectedEdgeId={selectedEdgeId}
-              onEdgeClick={setSelectedEdgeId}
-              flanges={flanges}
-              folds={folds}
-              interactionMode={viewerMode}
-              onFaceClick={handleFaceClick}
-              faceSketches={faceSketches}
-              selectedSketchLineId={selectedSketchLineId}
-              onSketchLineClick={handleSketchLineClick}
-              // Sketch plane props
-              sketchPlaneActive={!!activeFaceSketch}
-              sketchFaceId={activeFaceSketch}
-              sketchFaceOrigin={sketchFaceInfo?.origin}
-              sketchFaceWidth={sketchFaceInfo?.width}
-              sketchFaceHeight={sketchFaceInfo?.height}
-              sketchEntities={sketchEntities}
-              sketchActiveTool={sketchTool}
-              sketchGridSize={sketch.gridSize}
-              sketchSnapEnabled={sketch.snapEnabled}
-              onSketchAddEntity={handleSketchAddEntity}
-              onSketchRemoveEntity={handleSketchRemoveEntity}
-              sketchSelectedIds={sketchSelectedIds}
-              onSketchSelectEntity={handleSketchSelectEntity}
-              cameraApiRef={cameraApiRef}
-            >
-              {/* Sketch toolbar overlay */}
-              {activeFaceSketch && sketchFaceInfo && (
-                <FaceSketchToolbar
-                  activeTool={sketchTool}
-                  onToolChange={setSketchTool}
-                  faceId={activeFaceSketch}
-                  faceWidth={sketchFaceInfo.width}
-                  faceHeight={sketchFaceInfo.height}
-                  onFinish={handleFinishSketch}
-                  onExit={handleExitSketch}
-                />
+            <div className="flex-1 flex overflow-hidden">
+              {/* Left history panel */}
+              {history.entries.length > 1 && (
+                <div className="w-48 border-r bg-card/50 flex flex-col shrink-0">
+                  <div className="flex items-center gap-2 px-3 py-2 border-b">
+                    <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
+                    <p className="text-xs font-semibold">History ({history.entries.length - 1})</p>
+                  </div>
+                  <div className="p-2 flex-1 overflow-y-auto">
+                    <ActionTree
+                      entries={history.entries}
+                      currentIndex={history.currentIndex}
+                      onGoTo={history.goTo}
+                    />
+                  </div>
+                </div>
               )}
-            </Viewer3D>
+              <div className="flex-1 relative">
+                <Viewer3D
+                  profile={profile}
+                  thickness={sketch.sheetMetalDefaults.thickness}
+                  selectedEdgeId={selectedEdgeId}
+                  onEdgeClick={setSelectedEdgeId}
+                  flanges={flanges}
+                  folds={folds}
+                  interactionMode={viewerMode}
+                  onFaceClick={handleFaceClick}
+                  faceSketches={faceSketches}
+                  selectedSketchLineId={selectedSketchLineId}
+                  onSketchLineClick={handleSketchLineClick}
+                  sketchPlaneActive={!!activeFaceSketch}
+                  sketchFaceId={activeFaceSketch}
+                  sketchFaceOrigin={sketchFaceInfo?.origin}
+                  sketchFaceWidth={sketchFaceInfo?.width}
+                  sketchFaceHeight={sketchFaceInfo?.height}
+                  sketchEntities={sketchEntities}
+                  sketchActiveTool={sketchTool}
+                  sketchGridSize={sketch.gridSize}
+                  sketchSnapEnabled={sketch.snapEnabled}
+                  onSketchAddEntity={handleSketchAddEntity}
+                  onSketchRemoveEntity={handleSketchRemoveEntity}
+                  sketchSelectedIds={sketchSelectedIds}
+                  onSketchSelectEntity={handleSketchSelectEntity}
+                  cameraApiRef={cameraApiRef}
+                >
+                  {activeFaceSketch && sketchFaceInfo && (
+                    <FaceSketchToolbar
+                      activeTool={sketchTool}
+                      onToolChange={setSketchTool}
+                      faceId={activeFaceSketch}
+                      faceWidth={sketchFaceInfo.width}
+                      faceHeight={sketchFaceInfo.height}
+                      onFinish={handleFinishSketch}
+                      onExit={handleExitSketch}
+                    />
+                  )}
+                </Viewer3D>
+              </div>
+            </div>
           )}
 
           {/* Unfold Viewer */}
@@ -738,9 +758,6 @@ export default function Workspace() {
           subMode={currentStep === 'fold-flanges' ? subMode : undefined}
           faceSketches={faceSketches}
           selectedSketchLine={selectedSketchLine}
-          actionEntries={history.entries}
-          actionCurrentIndex={history.currentIndex}
-          onActionGoTo={history.goTo}
         />
       </div>
 
