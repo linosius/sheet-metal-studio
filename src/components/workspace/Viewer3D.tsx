@@ -63,7 +63,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} flatShading />
+        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
       </mesh>
       {showLines && edgesGeo && (
         <lineSegments geometry={edgesGeo}>
@@ -126,7 +126,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
       </mesh>
       {/* Tip (flat faces) */}
       <mesh
@@ -135,7 +135,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
       </mesh>
       {/* Tip edge outlines only when lines are enabled */}
       {showLines && tipEdgesGeo && (
@@ -329,7 +329,7 @@ function SheetMetalMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshStandardMaterial color="#e8ecf0" metalness={0.15} roughness={0.6} side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#e8ecf0" side={THREE.DoubleSide} />
       </mesh>
 
       {/* Wireframe edges — hidden in view mode */}
