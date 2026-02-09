@@ -968,7 +968,7 @@ export function Viewer3D({
   });
 
   return (
-    <div className="flex-1 bg-cad-surface relative">
+    <div className="w-full h-full bg-cad-surface relative">
       <Canvas>
         <PerspectiveCamera makeDefault position={defaultPos} fov={45} near={0.1} far={10000} />
         <SceneSetup />
