@@ -524,6 +524,134 @@ function SheetMetalMesh({
         <SketchRect3D key={entity.id} entity={entity} profile={profile} thickness={thickness} />
       ))}
 
+      {/* Render saved sketch entities on fold faces */}
+      {(isFoldMode || isSketchMode) && faceSketches
+        .filter(fs => fs.faceId.startsWith('fold_face_') && fs.faceId !== activeSketchFaceId)
+        .map(fs => {
+          const foldId = fs.faceId.replace('fold_face_', '');
+          const fold = folds.find(f => f.id === foldId);
+          if (!fold) return null;
+
+          const foldEdge = computeFoldEdge(profile, thickness, fold);
+          const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
+          const normal = foldEdge.normal.clone();
+          const dSign = fold.direction === 'up' ? 1 : -1;
+          const angleRad = fold.angle * Math.PI / 180;
+          const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
+          const bentNormal = normal.clone().applyQuaternion(q);
+          const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
+
+          const m = new THREE.Matrix4();
+          m.makeBasis(tangent, bentNormal, bentUp);
+          m.setPosition(foldEdge.start.clone().add(bentUp.clone().multiplyScalar(thickness)));
+
+          return (
+            <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
+              {fs.entities.map(ent => {
+                if (ent.type === 'line') {
+                  return (
+                    <Line key={ent.id} points={[
+                      [ent.start.x, ent.start.y, 0.02],
+                      [ent.end.x, ent.end.y, 0.02],
+                    ]} color="#ef4444" lineWidth={2} dashed dashSize={2} gapSize={1} />
+                  );
+                }
+                if (ent.type === 'circle') {
+                  const pts: [number,number,number][] = [];
+                  for (let i = 0; i <= 64; i++) {
+                    const a = (i / 64) * Math.PI * 2;
+                    pts.push([ent.center.x + Math.cos(a) * ent.radius, ent.center.y + Math.sin(a) * ent.radius, 0.02]);
+                  }
+                  return <Line key={ent.id} points={pts} color="#ef4444" lineWidth={2} />;
+                }
+                if (ent.type === 'rect') {
+                  return (
+                    <Line key={ent.id} points={[
+                      [ent.origin.x, ent.origin.y, 0.02],
+                      [ent.origin.x + ent.width, ent.origin.y, 0.02],
+                      [ent.origin.x + ent.width, ent.origin.y + ent.height, 0.02],
+                      [ent.origin.x, ent.origin.y + ent.height, 0.02],
+                      [ent.origin.x, ent.origin.y, 0.02],
+                    ]} color="#ef4444" lineWidth={2} />
+                  );
+                }
+                return null;
+              })}
+            </group>
+          );
+        })}
+
+      {/* Render saved sketch entities on flange faces */}
+      {(isFoldMode || isSketchMode) && faceSketches
+        .filter(fs => fs.faceId.startsWith('flange_face_') && fs.faceId !== activeSketchFaceId)
+        .map(fs => {
+          const flangeId = fs.faceId.replace('flange_face_', '');
+          const flange = flanges.find(f => f.id === flangeId);
+          if (!flange) return null;
+
+          const parentEdge = edges.find(e => e.id === flange.edgeId);
+          if (!parentEdge) return null;
+
+          const bendAngleRad = (flange.angle * Math.PI) / 180;
+          const dirSign = flange.direction === 'up' ? 1 : -1;
+          const R = flange.bendRadius;
+          const uDir = parentEdge.normal.clone().normalize();
+          const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+          const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
+
+          const sinA = Math.sin(bendAngleRad);
+          const cosA = Math.cos(bendAngleRad);
+          const arcEndU = R * sinA;
+          const arcEndW = R * (1 - cosA);
+
+          const flangeExtDir = uDir.clone().multiplyScalar(cosA).add(wDir.clone().multiplyScalar(sinA)).normalize();
+          const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
+
+          const flangeOrigin = parentEdge.start.clone()
+            .add(uDir.clone().multiplyScalar(arcEndU))
+            .add(wDir.clone().multiplyScalar(arcEndW))
+            .add(flangeSurfaceNormal.clone().multiplyScalar(thickness));
+
+          const m = new THREE.Matrix4();
+          m.makeBasis(edgeDir, flangeExtDir, flangeSurfaceNormal);
+          m.setPosition(flangeOrigin);
+
+          return (
+            <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
+              {fs.entities.map(ent => {
+                if (ent.type === 'line') {
+                  return (
+                    <Line key={ent.id} points={[
+                      [ent.start.x, ent.start.y, 0.02],
+                      [ent.end.x, ent.end.y, 0.02],
+                    ]} color="#ef4444" lineWidth={2} dashed dashSize={2} gapSize={1} />
+                  );
+                }
+                if (ent.type === 'circle') {
+                  const pts: [number,number,number][] = [];
+                  for (let i = 0; i <= 64; i++) {
+                    const a = (i / 64) * Math.PI * 2;
+                    pts.push([ent.center.x + Math.cos(a) * ent.radius, ent.center.y + Math.sin(a) * ent.radius, 0.02]);
+                  }
+                  return <Line key={ent.id} points={pts} color="#ef4444" lineWidth={2} />;
+                }
+                if (ent.type === 'rect') {
+                  return (
+                    <Line key={ent.id} points={[
+                      [ent.origin.x, ent.origin.y, 0.02],
+                      [ent.origin.x + ent.width, ent.origin.y, 0.02],
+                      [ent.origin.x + ent.width, ent.origin.y + ent.height, 0.02],
+                      [ent.origin.x, ent.origin.y + ent.height, 0.02],
+                      [ent.origin.x, ent.origin.y, 0.02],
+                    ]} color="#ef4444" lineWidth={2} />
+                  );
+                }
+                return null;
+              })}
+            </group>
+          );
+        })}
+
       {/* Render flanges */}
       {flanges.map((flange) => {
         const edge = edgeMap.get(flange.edgeId);
