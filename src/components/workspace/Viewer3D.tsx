@@ -361,8 +361,8 @@ function SheetMetalMesh({
           : isInnerTip ? '#f59e0b'
           : '#3b82f6';
 
-        // Only show colored edge highlights in edge mode
-        const showEdgeLine = isEdgeMode;
+        // Only show colored edge highlights in edge mode, hide fold-line edges (not actionable)
+        const showEdgeLine = isEdgeMode && !isFoldLine;
 
         return (
           <group key={edge.id}>
@@ -443,7 +443,7 @@ function SheetMetalMesh({
             thickness={thickness}
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
-            showLines={!isViewMode}
+            showLines={!isViewMode && !isEdgeMode}
           />
         );
       })}
@@ -461,7 +461,7 @@ function SheetMetalMesh({
             thickness={thickness}
             isSketchMode={isSketchMode}
             onFaceClick={onFaceClick}
-            showLines={!isViewMode}
+            showLines={!isViewMode && !isEdgeMode}
           />
         );
 
