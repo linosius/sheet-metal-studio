@@ -11,13 +11,14 @@ interface UnfoldViewerProps {
   flanges: Flange[];
   kFactor: number;
   folds?: Fold[];
+  cutouts?: { center: Point2D; radius: number }[];
 }
 
 const PADDING = 40;
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 10;
 
-export function UnfoldViewer({ profile, thickness, flanges, kFactor, folds = [] }: UnfoldViewerProps) {
+export function UnfoldViewer({ profile, thickness, flanges, kFactor, folds = [], cutouts = [] }: UnfoldViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 });
   const [zoom, setZoom] = useState(1);
@@ -199,6 +200,19 @@ export function UnfoldViewer({ profile, thickness, flanges, kFactor, folds = [] 
               />
             );
           })}
+
+          {/* Cutout holes */}
+          {cutouts.map((cutout, idx) => (
+            <circle
+              key={`cutout-${idx}`}
+              cx={cutout.center.x}
+              cy={cutout.center.y}
+              r={cutout.radius}
+              fill="hsl(var(--cad-surface))"
+              stroke="hsl(var(--foreground))"
+              strokeWidth={1.5 / finalScale}
+            />
+          ))}
 
           {/* Bend lines (dashed, in pairs) */}
           {pattern.bendLines.map((bl, idx) => (
