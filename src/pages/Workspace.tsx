@@ -21,6 +21,7 @@ import {
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
+import * as THREE from 'three';
 
 export default function Workspace() {
   const navigate = useNavigate();
@@ -45,7 +46,7 @@ export default function Workspace() {
   const [sketchTool, setSketchTool] = useState<'select' | 'line' | 'circle' | 'rect'>('line');
   const [sketchEntities, setSketchEntities] = useState<FaceSketchEntity[]>([]);
   const [sketchSelectedIds, setSketchSelectedIds] = useState<string[]>([]);
-  const cameraApiRef = useRef<{ reset: () => void; setFrontalView: () => void } | null>(null);
+  const cameraApiRef = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void } | null>(null);
 
   const canConvert = useMemo(() => {
     return extractProfile(sketch.entities) !== null;
@@ -80,6 +81,17 @@ export default function Workspace() {
     setCurrentStep(step);
   }, [profile]);
 
+  const profileBounds = useMemo(() => {
+    if (!profile) return null;
+    const xs = profile.map(p => p.x);
+    const ys = profile.map(p => p.y);
+    return {
+      width: Math.max(...xs) - Math.min(...xs),
+      height: Math.max(...ys) - Math.min(...ys),
+      origin: { x: Math.min(...xs), y: Math.min(...ys) } as Point2D,
+    };
+  }, [profile]);
+
   // ── Face click handler (sketch sub-mode: open in-3D sketch) ──
   const handleFaceClick = useCallback((faceId: string) => {
     if (subMode !== 'sketch' || currentStep !== 'fold-flanges') return;
@@ -92,8 +104,65 @@ export default function Workspace() {
       setActiveFaceSketch(faceId);
       setSketchTool('line');
       setSketchSelectedIds([]);
+
+      // Orient camera to face the sketch plane
+      if (profile && cameraApiRef.current) {
+        const t = sketch.sheetMetalDefaults.thickness;
+        if (faceId === 'base_top') {
+          const cx = profileBounds ? profileBounds.origin.x + profileBounds.width / 2 : 0;
+          const cy = profileBounds ? profileBounds.origin.y + profileBounds.height / 2 : 0;
+          cameraApiRef.current.setViewToFace([0, 0, 1], [cx, cy, t]);
+        } else if (faceId === 'base_bot') {
+          const cx = profileBounds ? profileBounds.origin.x + profileBounds.width / 2 : 0;
+          const cy = profileBounds ? profileBounds.origin.y + profileBounds.height / 2 : 0;
+          cameraApiRef.current.setViewToFace([0, 0, -1], [cx, cy, 0]);
+        } else if (faceId.startsWith('fold_face_')) {
+          const foldId = faceId.replace('fold_face_', '');
+          const fold = folds.find(f => f.id === foldId);
+          if (fold) {
+            const foldEdge = computeFoldEdge(profile, t, fold);
+            const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
+            const normal = foldEdge.normal.clone();
+            const dSign = fold.direction === 'up' ? 1 : -1;
+            const angleRad = fold.angle * Math.PI / 180;
+            const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
+            const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
+            const mid = foldEdge.start.clone().add(foldEdge.end).multiplyScalar(0.5);
+            cameraApiRef.current.setViewToFace(
+              [bentUp.x, bentUp.y, bentUp.z],
+              [mid.x, mid.y, mid.z],
+            );
+          }
+        } else if (faceId.startsWith('flange_face_')) {
+          const flangeId = faceId.replace('flange_face_', '');
+          const flange = flanges.find(f => f.id === flangeId);
+          if (flange) {
+            const allEdges = getAllSelectableEdges(profile, t, flanges, folds);
+            const parentEdge = allEdges.find(e => e.id === flange.edgeId);
+            if (parentEdge) {
+              const bendAngleRad = (flange.angle * Math.PI) / 180;
+              const dirSign = flange.direction === 'up' ? 1 : -1;
+              const uDir = parentEdge.normal.clone().normalize();
+              const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
+              const sinA = Math.sin(bendAngleRad);
+              const cosA = Math.cos(bendAngleRad);
+              const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
+              const arcEndU = flange.bendRadius * sinA;
+              const arcEndW = flange.bendRadius * (1 - cosA);
+              const flangeOrigin = parentEdge.start.clone()
+                .add(uDir.clone().multiplyScalar(arcEndU))
+                .add(wDir.clone().multiplyScalar(arcEndW));
+              const mid = flangeOrigin.clone().add(parentEdge.end.clone().sub(parentEdge.start).multiplyScalar(0.5));
+              cameraApiRef.current.setViewToFace(
+                [flangeSurfaceNormal.x, flangeSurfaceNormal.y, flangeSurfaceNormal.z],
+                [mid.x, mid.y, mid.z],
+              );
+            }
+          }
+        }
+      }
     }
-  }, [subMode, currentStep, activeFaceSketch, faceSketches]);
+  }, [subMode, currentStep, activeFaceSketch, faceSketches, profile, profileBounds, folds, flanges, sketch.sheetMetalDefaults.thickness]);
 
   // ── In-3D sketch plane handlers ──
   const handleSketchAddEntity = useCallback((entity: FaceSketchEntity) => {
@@ -127,17 +196,6 @@ export default function Workspace() {
     setSketchEntities([]);
     setSketchSelectedIds([]);
   }, []);
-
-  const profileBounds = useMemo(() => {
-    if (!profile) return null;
-    const xs = profile.map(p => p.x);
-    const ys = profile.map(p => p.y);
-    return {
-      width: Math.max(...xs) - Math.min(...xs),
-      height: Math.max(...ys) - Math.min(...ys),
-      origin: { x: Math.min(...xs), y: Math.min(...ys) } as Point2D,
-    };
-  }, [profile]);
 
   // Compute sketch face info (supports base faces and fold faces)
   const sketchFaceInfo = useMemo(() => {
@@ -544,7 +602,7 @@ export default function Workspace() {
               <Button
                 variant={subMode === 'sketch' ? 'default' : 'outline'}
                 size="sm" className="h-7 text-xs gap-1"
-                onClick={() => { setSubMode('sketch'); setSelectedEdgeId(null); setSelectedSketchLineId(null); cameraApiRef.current?.setFrontalView(); }}
+                onClick={() => { setSubMode('sketch'); setSelectedEdgeId(null); setSelectedSketchLineId(null); }}
               >
                 <PenLine className="h-3 w-3" />
                 2D Sketch

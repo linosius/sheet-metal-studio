@@ -526,7 +526,7 @@ function SheetMetalMesh({
 }
 
 function CameraApi({ apiRef, defaultPos, defaultTarget }: {
-  apiRef: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void }>;
+  apiRef: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>;
   defaultPos: [number, number, number];
   defaultTarget: [number, number, number];
 }) {
@@ -540,12 +540,30 @@ function CameraApi({ apiRef, defaultPos, defaultTarget }: {
     }
   };
   apiRef.current.setFrontalView = () => {
-    // Position camera directly above, looking straight down at the XY plane
     const [tx, ty, tz] = defaultTarget;
     const dist = Math.max(defaultPos[2] * 1.5, 200);
     camera.position.set(tx, ty, dist);
     if (controls) {
       (controls as any).target.set(tx, ty, tz);
+      (controls as any).update();
+    }
+  };
+  apiRef.current.setViewToFace = (normal: [number,number,number], center: [number,number,number]) => {
+    const dist = Math.max(defaultPos[2] * 1.5, 200);
+    camera.position.set(
+      center[0] + normal[0] * dist,
+      center[1] + normal[1] * dist,
+      center[2] + normal[2] * dist,
+    );
+    // Set up vector: pick one that's not parallel to the normal
+    const n = new THREE.Vector3(...normal);
+    let upCandidate = new THREE.Vector3(0, 0, 1);
+    if (Math.abs(n.dot(upCandidate)) > 0.9) {
+      upCandidate = new THREE.Vector3(0, 1, 0);
+    }
+    camera.up.copy(upCandidate);
+    if (controls) {
+      (controls as any).target.set(...center);
       (controls as any).update();
     }
   };
@@ -611,7 +629,7 @@ interface Viewer3DProps {
   sketchSelectedIds?: string[];
   onSketchSelectEntity?: (id: string) => void;
   // Camera control
-  cameraApiRef?: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void } | null>;
+  cameraApiRef?: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void } | null>;
 }
 
 export function Viewer3D({
@@ -625,7 +643,7 @@ export function Viewer3D({
   onSketchAddEntity, onSketchRemoveEntity, sketchSelectedIds, onSketchSelectEntity,
   cameraApiRef,
 }: Viewer3DProps) {
-  const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void }>({ reset: () => {}, setFrontalView: () => {} });
+  const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>({ reset: () => {}, setFrontalView: () => {}, setViewToFace: () => {} });
 
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
