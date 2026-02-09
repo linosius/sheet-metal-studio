@@ -34,6 +34,52 @@ const ZOOM_MAX = 5;
 type ArcPhase = 'center' | 'radius' | 'end';
 type MirrorPhase = 'axis1' | 'axis2';
 
+// Check if a point is inside a box (min/max normalized)
+function pointInBox(p: Point2D, b1: Point2D, b2: Point2D): boolean {
+  const minX = Math.min(b1.x, b2.x), maxX = Math.max(b1.x, b2.x);
+  const minY = Math.min(b1.y, b2.y), maxY = Math.max(b1.y, b2.y);
+  return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+}
+
+// Check if entity is fully enclosed in selection box
+function entityInBox(ent: SketchEntity, b1: Point2D, b2: Point2D): boolean {
+  if (ent.type === 'line') return pointInBox(ent.start, b1, b2) && pointInBox(ent.end, b1, b2);
+  if (ent.type === 'rect') {
+    const corners = [
+      ent.origin,
+      { x: ent.origin.x + ent.width, y: ent.origin.y },
+      { x: ent.origin.x + ent.width, y: ent.origin.y + ent.height },
+      { x: ent.origin.x, y: ent.origin.y + ent.height },
+    ];
+    return corners.every(c => pointInBox(c, b1, b2));
+  }
+  if (ent.type === 'circle') {
+    return pointInBox({ x: ent.center.x - ent.radius, y: ent.center.y - ent.radius }, b1, b2)
+      && pointInBox({ x: ent.center.x + ent.radius, y: ent.center.y + ent.radius }, b1, b2);
+  }
+  if (ent.type === 'arc') return pointInBox(ent.center, b1, b2);
+  if (ent.type === 'point') return pointInBox(ent.position, b1, b2);
+  return false;
+}
+
+// Check if entity crosses (any key point inside) the selection box
+function entityCrossesBox(ent: SketchEntity, b1: Point2D, b2: Point2D): boolean {
+  if (ent.type === 'line') return pointInBox(ent.start, b1, b2) || pointInBox(ent.end, b1, b2);
+  if (ent.type === 'rect') {
+    const corners = [
+      ent.origin,
+      { x: ent.origin.x + ent.width, y: ent.origin.y },
+      { x: ent.origin.x + ent.width, y: ent.origin.y + ent.height },
+      { x: ent.origin.x, y: ent.origin.y + ent.height },
+    ];
+    return corners.some(c => pointInBox(c, b1, b2));
+  }
+  if (ent.type === 'circle') return pointInBox(ent.center, b1, b2);
+  if (ent.type === 'arc') return pointInBox(ent.center, b1, b2);
+  if (ent.type === 'point') return pointInBox(ent.position, b1, b2);
+  return false;
+}
+
 export function SketchCanvas({
   entities,
   selectedIds,
@@ -68,6 +114,7 @@ export function SketchCanvas({
 
   // Move state
   const [moveStart, setMoveStart] = useState<Point2D | null>(null);
+  const [moveDragging, setMoveDragging] = useState(false); // entities attached to cursor
 
   // Mirror state
   const [mirrorPhase, setMirrorPhase] = useState<MirrorPhase>('axis1');
@@ -77,11 +124,16 @@ export function SketchCanvas({
   const [editingDimId, setEditingDimId] = useState<string | null>(null);
   const [dimInputValue, setDimInputValue] = useState('');
 
-  // Precision input for rect (W x H) and line (Length, Angle)
+  // Precision input for rect (W x H), line (Length, Angle), move (dX, dY)
   const [precisionMode, setPrecisionMode] = useState(false);
   const [precInput1, setPrecInput1] = useState('');
   const [precInput2, setPrecInput2] = useState('');
   const precInput1Ref = useRef<HTMLInputElement>(null);
+
+  // Window selection box
+  const [selBoxStart, setSelBoxStart] = useState<Point2D | null>(null);
+  const [selBoxEnd, setSelBoxEnd] = useState<Point2D | null>(null);
+  const [isSelecting, setIsSelecting] = useState(false);
 
   const svgToWorld = useCallback((clientX: number, clientY: number): Point2D => {
     const svg = svgRef.current;
@@ -101,16 +153,35 @@ export function SketchCanvas({
 
   // Precision input submit
   const handlePrecisionSubmit = useCallback(() => {
-    if (!drawStart) return;
     const v1 = parseFloat(precInput1);
     const v2 = parseFloat(precInput2);
     if (isNaN(v1) || isNaN(v2)) { toast.error('Ungültige Eingabe'); return; }
 
-    if (activeTool === 'rect') {
+    if (activeTool === 'move' && moveDragging && moveStart) {
+      // v1 = dX, v2 = dY
+      for (const id of selectedIds) {
+        const ent = entities.find(e => e.id === id);
+        if (!ent) continue;
+        if (ent.type === 'line') {
+          onUpdateEntity(id, { start: { x: ent.start.x + v1, y: ent.start.y + v2 }, end: { x: ent.end.x + v1, y: ent.end.y + v2 } });
+        } else if (ent.type === 'rect') {
+          onUpdateEntity(id, { origin: { x: ent.origin.x + v1, y: ent.origin.y + v2 } });
+        } else if (ent.type === 'circle') {
+          onUpdateEntity(id, { center: { x: ent.center.x + v1, y: ent.center.y + v2 } });
+        } else if (ent.type === 'arc') {
+          onUpdateEntity(id, { center: { x: ent.center.x + v1, y: ent.center.y + v2 } });
+        } else if (ent.type === 'point') {
+          onUpdateEntity(id, { position: { x: ent.position.x + v1, y: ent.position.y + v2 } });
+        }
+      }
+      setMoveStart(null);
+      setMoveDragging(false);
+      toast.success('Entities moved');
+    } else if (activeTool === 'rect' && drawStart) {
       if (v1 <= 0 || v2 <= 0) { toast.error('Breite und Höhe müssen > 0 sein'); return; }
       onAddRect(drawStart, v1, v2);
       setDrawStart(null);
-    } else if (activeTool === 'line') {
+    } else if (activeTool === 'line' && drawStart) {
       if (v1 <= 0) { toast.error('Länge muss > 0 sein'); return; }
       const angleRad = (v2 * Math.PI) / 180;
       const end: Point2D = {
@@ -118,12 +189,12 @@ export function SketchCanvas({
         y: drawStart.y + v1 * Math.sin(angleRad),
       };
       onAddLine(drawStart, end);
-      setDrawStart(end); // chain
+      setDrawStart(end);
     }
     setPrecisionMode(false);
     setPrecInput1('');
     setPrecInput2('');
-  }, [drawStart, precInput1, precInput2, activeTool, onAddRect, onAddLine]);
+  }, [drawStart, precInput1, precInput2, activeTool, onAddRect, onAddLine, onUpdateEntity, moveStart, moveDragging, selectedIds, entities]);
 
   // Reset tool state on tool change
   useEffect(() => {
@@ -131,18 +202,22 @@ export function SketchCanvas({
     setArcPhase('center');
     setArcCenter(null);
     setMoveStart(null);
+    setMoveDragging(false);
     setMirrorPhase('axis1');
     setMirrorAxis1(null);
     setEditingDimId(null);
     setPrecisionMode(false);
     setPrecInput1('');
     setPrecInput2('');
+    setSelBoxStart(null);
+    setSelBoxEnd(null);
+    setIsSelecting(false);
   }, [activeTool]);
 
-  // Find nearest entity to a point (for trim/extend/offset/dimension)
+  // Find nearest entity to a point
   const findNearestEntity = useCallback((p: Point2D): SketchEntity | null => {
     let best: SketchEntity | null = null;
-    let bestDist = 15; // threshold in world units
+    let bestDist = 15;
     for (const ent of entities) {
       let d = Infinity;
       if (ent.type === 'line') {
@@ -154,7 +229,6 @@ export function SketchCanvas({
           d = distance2D(p, proj);
         }
       } else if (ent.type === 'rect') {
-        // distance to rect edges
         const corners = [
           { x: ent.origin.x, y: ent.origin.y },
           { x: ent.origin.x + ent.width, y: ent.origin.y },
@@ -183,6 +257,28 @@ export function SketchCanvas({
     return best;
   }, [entities]);
 
+  // Complete window selection
+  const completeWindowSelection = useCallback((start: Point2D, end: Point2D, forMove = false) => {
+    const isLeftToRight = end.x >= start.x;
+    const selected: string[] = [];
+    for (const ent of entities) {
+      const inBox = isLeftToRight ? entityInBox(ent, start, end) : entityCrossesBox(ent, start, end);
+      if (inBox) selected.push(ent.id);
+    }
+    if (selected.length > 0) {
+      onDeselectAll();
+      selected.forEach(id => onSelectEntity(id, true));
+      if (forMove) {
+        // Compute center of selection as base point
+        setMoveStart(getSnappedPoint({ x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 }));
+        setMoveDragging(true);
+      }
+    }
+    setSelBoxStart(null);
+    setSelBoxEnd(null);
+    setIsSelecting(false);
+  }, [entities, onDeselectAll, onSelectEntity, getSnappedPoint]);
+
   // Mouse handlers
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     if (e.button === 1 || (e.button === 0 && e.altKey)) {
@@ -196,9 +292,20 @@ export function SketchCanvas({
     const snapped = getSnappedPoint(worldPos);
 
     switch (activeTool) {
-      case 'select':
-        onDeselectAll();
+      case 'select': {
+        // Check if clicking on an entity first
+        const nearest = findNearestEntity(worldPos);
+        if (nearest) {
+          onSelectEntity(nearest.id, e.shiftKey);
+        } else {
+          if (!e.shiftKey) onDeselectAll();
+          // Start window selection
+          setSelBoxStart(snapped);
+          setSelBoxEnd(snapped);
+          setIsSelecting(true);
+        }
         break;
+      }
 
       case 'line':
       case 'rect':
@@ -209,7 +316,7 @@ export function SketchCanvas({
           if (activeTool === 'line') {
             if (distance2D(drawStart, snapped) > 0.5) {
               onAddLine(drawStart, snapped);
-              setDrawStart(snapped); // chain
+              setDrawStart(snapped);
             }
           } else if (activeTool === 'rect') {
             const w = snapped.x - drawStart.x, h = snapped.y - drawStart.y;
@@ -252,13 +359,8 @@ export function SketchCanvas({
         break;
 
       case 'move':
-        if (selectedIds.length === 0) {
-          toast.info('Select entities first, then use Move');
-          break;
-        }
-        if (!moveStart) {
-          setMoveStart(snapped);
-        } else {
+        if (moveDragging && moveStart) {
+          // Place entities at new position
           const dx = snapped.x - moveStart.x, dy = snapped.y - moveStart.y;
           for (const id of selectedIds) {
             const ent = entities.find(e => e.id === id);
@@ -276,7 +378,25 @@ export function SketchCanvas({
             }
           }
           setMoveStart(null);
+          setMoveDragging(false);
           toast.success('Entities moved');
+        } else if (selectedIds.length > 0) {
+          // Already have selection, set base point
+          setMoveStart(snapped);
+          setMoveDragging(true);
+        } else {
+          // No selection: try click-pick an entity, or start window selection
+          const nearest = findNearestEntity(worldPos);
+          if (nearest) {
+            onSelectEntity(nearest.id, false);
+            setMoveStart(snapped);
+            setMoveDragging(true);
+          } else {
+            // Start window selection for move
+            setSelBoxStart(snapped);
+            setSelBoxEnd(snapped);
+            setIsSelecting(true);
+          }
         }
         break;
 
@@ -291,7 +411,6 @@ export function SketchCanvas({
           toast.info('No intersections found to trim at');
           break;
         }
-        // Replace the line with two segments (excluding the trimmed portion)
         const allPts = [nearest.start, result.start, result.end, nearest.end];
         onRemoveEntities([nearest.id]);
         if (distance2D(allPts[0], allPts[1]) > 0.5) {
@@ -324,7 +443,7 @@ export function SketchCanvas({
       case 'offset': {
         const nearest = findNearestEntity(worldPos);
         if (!nearest) { toast.info('Click on an entity to offset'); break; }
-        const dist = gridSize; // use grid size as default offset distance
+        const dist = gridSize;
         const side = nearest.type === 'line'
           ? pointSideOfLine(worldPos, nearest.start, nearest.end)
           : (distance2D(worldPos, (nearest as any).center ?? nearest) > ((nearest as any).radius ?? 0) ? 1 : -1);
@@ -370,7 +489,6 @@ export function SketchCanvas({
         const nearest = findNearestEntity(worldPos);
         if (!nearest) { toast.info('Click on an entity to edit its dimension'); break; }
         setEditingDimId(nearest.id);
-        // Set initial value
         if (nearest.type === 'line') {
           setDimInputValue(distance2D(nearest.start, nearest.end).toFixed(1));
         } else if (nearest.type === 'rect') {
@@ -385,7 +503,7 @@ export function SketchCanvas({
     }
   }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onAddCircle, onAddArc, onAddPoint,
     onUpdateEntity, onAddEntities, onDeselectAll, onRemoveEntities, viewBox, entities, selectedIds,
-    arcPhase, arcCenter, arcRadius, arcStartAngle, moveStart, mirrorPhase, mirrorAxis1, findNearestEntity, gridSize]);
+    arcPhase, arcCenter, arcRadius, arcStartAngle, moveStart, moveDragging, mirrorPhase, mirrorAxis1, findNearestEntity, gridSize, onSelectEntity]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const worldPos = svgToWorld(e.clientX, e.clientY);
@@ -397,12 +515,30 @@ export function SketchCanvas({
       const dy = (e.clientY - panStart.y) * (viewBox.h / (svgRef.current?.getBoundingClientRect().height || 1));
       setViewBox(prev => ({ ...prev, x: panStart.vx - dx, y: panStart.vy - dy }));
     }
-  }, [svgToWorld, getSnappedPoint, isPanning, panStart, viewBox.w, viewBox.h]);
+
+    // Update window selection box
+    if (isSelecting && selBoxStart) {
+      setSelBoxEnd(snapped);
+    }
+  }, [svgToWorld, getSnappedPoint, isPanning, panStart, viewBox.w, viewBox.h, isSelecting, selBoxStart]);
 
   const handleMouseUp = useCallback(() => {
     setIsPanning(false);
     setPanStart(null);
-  }, []);
+
+    // Complete window selection
+    if (isSelecting && selBoxStart && selBoxEnd) {
+      const boxW = Math.abs(selBoxEnd.x - selBoxStart.x);
+      const boxH = Math.abs(selBoxEnd.y - selBoxStart.y);
+      if (boxW > 1 || boxH > 1) {
+        completeWindowSelection(selBoxStart, selBoxEnd, activeTool === 'move');
+      } else {
+        setSelBoxStart(null);
+        setSelBoxEnd(null);
+        setIsSelecting(false);
+      }
+    }
+  }, [isSelecting, selBoxStart, selBoxEnd, completeWindowSelection, activeTool]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -453,38 +589,49 @@ export function SketchCanvas({
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // Tab toggles precision mode when drawStart is set for line/rect
-      if (e.key === 'Tab' && drawStart && (activeTool === 'line' || activeTool === 'rect') && !editingDimId) {
-        e.preventDefault();
-        setPrecisionMode(prev => {
-          if (!prev) {
-            // Pre-fill with current preview values
-            if (activeTool === 'rect') {
-              setPrecInput1(Math.abs(cursorPos.x - drawStart.x).toFixed(1));
-              setPrecInput2(Math.abs(cursorPos.y - drawStart.y).toFixed(1));
-            } else {
-              const len = distance2D(drawStart, cursorPos);
-              const angle = (Math.atan2(cursorPos.y - drawStart.y, cursorPos.x - drawStart.x) * 180) / Math.PI;
-              setPrecInput1(len.toFixed(1));
-              setPrecInput2(angle.toFixed(1));
+      // Tab toggles precision mode for line/rect/move
+      if (e.key === 'Tab' && !editingDimId) {
+        const canPrecLine = activeTool === 'line' && drawStart;
+        const canPrecRect = activeTool === 'rect' && drawStart;
+        const canPrecMove = activeTool === 'move' && moveDragging && moveStart;
+        if (canPrecLine || canPrecRect || canPrecMove) {
+          e.preventDefault();
+          setPrecisionMode(prev => {
+            if (!prev) {
+              if (activeTool === 'rect' && drawStart) {
+                setPrecInput1(Math.abs(cursorPos.x - drawStart.x).toFixed(1));
+                setPrecInput2(Math.abs(cursorPos.y - drawStart.y).toFixed(1));
+              } else if (activeTool === 'line' && drawStart) {
+                const len = distance2D(drawStart, cursorPos);
+                const angle = (Math.atan2(cursorPos.y - drawStart.y, cursorPos.x - drawStart.x) * 180) / Math.PI;
+                setPrecInput1(len.toFixed(1));
+                setPrecInput2(angle.toFixed(1));
+              } else if (activeTool === 'move' && moveStart) {
+                setPrecInput1((cursorPos.x - moveStart.x).toFixed(1));
+                setPrecInput2((cursorPos.y - moveStart.y).toFixed(1));
+              }
+              setTimeout(() => precInput1Ref.current?.focus(), 50);
             }
-            setTimeout(() => precInput1Ref.current?.focus(), 50);
-          }
-          return !prev;
-        });
-        return;
+            return !prev;
+          });
+          return;
+        }
       }
       if (e.key === 'Escape') {
         setDrawStart(null);
         setArcPhase('center');
         setArcCenter(null);
         setMoveStart(null);
+        setMoveDragging(false);
         setMirrorPhase('axis1');
         setMirrorAxis1(null);
         setEditingDimId(null);
         setPrecisionMode(false);
         setPrecInput1('');
         setPrecInput2('');
+        setSelBoxStart(null);
+        setSelBoxEnd(null);
+        setIsSelecting(false);
       }
       if (e.key === 'Enter' && precisionMode) {
         e.preventDefault();
@@ -502,7 +649,7 @@ export function SketchCanvas({
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [selectedIds, onRemoveEntities, editingDimId, handleDimSubmit, drawStart, activeTool, precisionMode, handlePrecisionSubmit, cursorPos]);
+  }, [selectedIds, onRemoveEntities, editingDimId, handleDimSubmit, drawStart, activeTool, precisionMode, handlePrecisionSubmit, cursorPos, moveDragging, moveStart]);
 
   // Generate grid lines
   const gridLines = [];
@@ -720,12 +867,51 @@ export function SketchCanvas({
       }
     }
 
-    if (activeTool === 'move' && moveStart) {
+    if (activeTool === 'move' && moveDragging && moveStart) {
+      const dx = cursorPos.x - moveStart.x;
+      const dy = cursorPos.y - moveStart.y;
       return (
-        <g opacity={0.5}>
+        <g opacity={0.4}>
           <line x1={moveStart.x} y1={moveStart.y} x2={cursorPos.x} y2={cursorPos.y}
             stroke="hsl(var(--cad-snap))" strokeWidth={0.5} strokeDasharray="2 1" />
-          <circle cx={moveStart.x} cy={moveStart.y} r={1.5} fill="none" stroke="hsl(var(--cad-snap))" strokeWidth={0.3} />
+          {/* Ghost preview of selected entities at new position */}
+          {selectedIds.map(id => {
+            const ent = entities.find(e => e.id === id);
+            if (!ent) return null;
+            if (ent.type === 'line') {
+              return <line key={`mv-${id}`}
+                x1={ent.start.x + dx} y1={ent.start.y + dy}
+                x2={ent.end.x + dx} y2={ent.end.y + dy}
+                stroke="hsl(var(--cad-snap))" strokeWidth={0.6} strokeDasharray="2 1" />;
+            }
+            if (ent.type === 'rect') {
+              return <rect key={`mv-${id}`}
+                x={ent.origin.x + dx} y={ent.origin.y + dy}
+                width={ent.width} height={ent.height}
+                stroke="hsl(var(--cad-snap))" strokeWidth={0.6} strokeDasharray="2 1" fill="none" />;
+            }
+            if (ent.type === 'circle') {
+              return <circle key={`mv-${id}`}
+                cx={ent.center.x + dx} cy={ent.center.y + dy} r={ent.radius}
+                stroke="hsl(var(--cad-snap))" strokeWidth={0.6} strokeDasharray="2 1" fill="none" />;
+            }
+            if (ent.type === 'arc') {
+              const path = arcSvgPath(ent.center.x + dx, ent.center.y + dy, ent.radius, ent.startAngle, ent.endAngle);
+              return <path key={`mv-${id}`} d={path}
+                stroke="hsl(var(--cad-snap))" strokeWidth={0.6} strokeDasharray="2 1" fill="none" />;
+            }
+            if (ent.type === 'point') {
+              return <circle key={`mv-${id}`}
+                cx={ent.position.x + dx} cy={ent.position.y + dy} r={0.8}
+                fill="hsl(var(--cad-snap))" />;
+            }
+            return null;
+          })}
+          {/* dX/dY label */}
+          <text x={cursorPos.x + 3} y={cursorPos.y - 3}
+            fill="hsl(var(--cad-dimension))" fontSize={3} fontFamily="JetBrains Mono, monospace">
+            Δ{dx.toFixed(1)}, {dy.toFixed(1)}
+          </text>
         </g>
       );
     }
@@ -740,14 +926,34 @@ export function SketchCanvas({
     return null;
   };
 
+  // Render selection box
+  const renderSelectionBox = () => {
+    if (!isSelecting || !selBoxStart || !selBoxEnd) return null;
+    const x = Math.min(selBoxStart.x, selBoxEnd.x);
+    const y = Math.min(selBoxStart.y, selBoxEnd.y);
+    const w = Math.abs(selBoxEnd.x - selBoxStart.x);
+    const h = Math.abs(selBoxEnd.y - selBoxStart.y);
+    const isLeftToRight = selBoxEnd.x >= selBoxStart.x;
+    return (
+      <rect x={x} y={y} width={w} height={h}
+        stroke={isLeftToRight ? 'hsl(var(--cad-selection))' : 'hsl(var(--cad-snap))'}
+        strokeWidth={0.5}
+        strokeDasharray={isLeftToRight ? 'none' : '3 2'}
+        fill={isLeftToRight ? 'hsl(var(--cad-selection) / 0.08)' : 'hsl(var(--cad-snap) / 0.08)'}
+      />
+    );
+  };
+
   // Status text
   const getStatusText = () => {
-    if (precisionMode && drawStart) {
-      return activeTool === 'rect'
-        ? 'Rechteck: Breite & Höhe eingeben, Enter bestätigen'
-        : 'Linie: Länge & Winkel eingeben, Enter bestätigen';
+    if (precisionMode) {
+      if (activeTool === 'move') return 'Move: dX & dY eingeben, Enter bestätigen';
+      if (activeTool === 'rect') return 'Rechteck: Breite & Höhe eingeben, Enter bestätigen';
+      return 'Linie: Länge & Winkel eingeben, Enter bestätigen';
     }
     switch (activeTool) {
+      case 'select':
+        return 'Auswahl: Klick auf Entity oder Fenster ziehen (L→R: eingeschlossen, R→L: kreuzend)';
       case 'line':
         if (drawStart) return 'Linie: Klicken oder Tab für Präzisionseingabe (Länge/Winkel)';
         return 'Linie: Startpunkt klicken';
@@ -760,8 +966,9 @@ export function SketchCanvas({
         if (arcPhase === 'end') return 'Arc: Click to set end angle';
         break;
       case 'move':
-        if (!moveStart) return 'Move: Click base point';
-        return 'Move: Click destination';
+        if (moveDragging && moveStart) return 'Move: Klicken zum Platzieren oder Tab für dX/dY';
+        if (selectedIds.length > 0) return 'Move: Basispunkt klicken';
+        return 'Move: Entity klicken oder Fenster ziehen zum Auswählen';
       case 'mirror':
         if (mirrorPhase === 'axis1') return 'Mirror: Click first axis point';
         return 'Mirror: Click second axis point';
@@ -774,6 +981,16 @@ export function SketchCanvas({
   };
 
   const statusText = getStatusText();
+  const showPrecision = precisionMode && (
+    (activeTool === 'line' && drawStart) ||
+    (activeTool === 'rect' && drawStart) ||
+    (activeTool === 'move' && moveDragging && moveStart)
+  );
+
+  const precLabel1 = activeTool === 'rect' ? 'B:' : activeTool === 'move' ? 'dX:' : 'L:';
+  const precLabel2 = activeTool === 'rect' ? 'H:' : activeTool === 'move' ? 'dY:' : '∠:';
+  const precPlaceholder1 = activeTool === 'rect' ? 'Breite' : activeTool === 'move' ? 'dX' : 'Länge';
+  const precPlaceholder2 = activeTool === 'rect' ? 'Höhe' : activeTool === 'move' ? 'dY' : 'Winkel°';
 
   return (
     <div className="relative flex-1 overflow-hidden bg-cad-surface">
@@ -797,11 +1014,9 @@ export function SketchCanvas({
       )}
 
       {/* Precision input panel */}
-      {precisionMode && drawStart && (activeTool === 'line' || activeTool === 'rect') && (
+      {showPrecision && (
         <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 bg-card/95 backdrop-blur border rounded-lg px-4 py-2.5 flex items-center gap-3 shadow-lg">
-          <span className="text-xs font-medium text-muted-foreground">
-            {activeTool === 'rect' ? 'B:' : 'L:'}
-          </span>
+          <span className="text-xs font-medium text-muted-foreground">{precLabel1}</span>
           <input
             ref={precInput1Ref}
             type="number"
@@ -810,11 +1025,9 @@ export function SketchCanvas({
             onChange={e => setPrecInput1(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handlePrecisionSubmit(); if (e.key === 'Escape') { setPrecisionMode(false); } }}
             className="w-20 h-7 bg-background border rounded px-2 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-            placeholder={activeTool === 'rect' ? 'Breite' : 'Länge'}
+            placeholder={precPlaceholder1}
           />
-          <span className="text-xs font-medium text-muted-foreground">
-            {activeTool === 'rect' ? 'H:' : '∠:'}
-          </span>
+          <span className="text-xs font-medium text-muted-foreground">{precLabel2}</span>
           <input
             type="number"
             step="0.1"
@@ -822,7 +1035,7 @@ export function SketchCanvas({
             onChange={e => setPrecInput2(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handlePrecisionSubmit(); if (e.key === 'Escape') { setPrecisionMode(false); } }}
             className="w-20 h-7 bg-background border rounded px-2 text-xs font-mono text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-            placeholder={activeTool === 'rect' ? 'Höhe' : 'Winkel°'}
+            placeholder={precPlaceholder2}
           />
           <span className="text-[10px] text-muted-foreground">mm</span>
           <button
@@ -854,6 +1067,7 @@ export function SketchCanvas({
 
         {entities.map(renderEntity)}
         {renderPreview()}
+        {renderSelectionBox()}
 
         {/* Snap cursor */}
         {activeTool !== 'select' && (
