@@ -55,10 +55,18 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
       const dx = child.lineEnd.x - child.lineStart.x;
       if (Math.abs(dx) < 0.01) continue;
       const slope = (child.lineEnd.y - child.lineStart.y) / dx;
-      const y0 = child.lineStart.y + slope * -child.lineStart.x;
-      const yE = child.lineStart.y + slope * (edgeLen - child.lineStart.x);
-      hs = Math.min(hs, Math.max(0, Math.min(flange.height, y0)));
-      he = Math.min(he, Math.max(0, Math.min(flange.height, yE)));
+      // Only clip at boundaries the fold line actually reaches
+      const TOL = 1;
+      const reachesLeft = child.lineStart.x < TOL || child.lineEnd.x < TOL;
+      const reachesRight = child.lineStart.x > edgeLen - TOL || child.lineEnd.x > edgeLen - TOL;
+      const y0 = reachesLeft
+        ? Math.max(0, Math.min(flange.height, child.lineStart.y + slope * -child.lineStart.x))
+        : flange.height;
+      const yE = reachesRight
+        ? Math.max(0, Math.min(flange.height, child.lineStart.y + slope * (edgeLen - child.lineStart.x)))
+        : flange.height;
+      hs = Math.min(hs, y0);
+      he = Math.min(he, yE);
     }
     return { clipHS: hs, clipHE: he };
   }, [childFolds, edge, flange]);
