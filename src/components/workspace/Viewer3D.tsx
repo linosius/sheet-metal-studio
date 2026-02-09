@@ -781,7 +781,9 @@ export function Viewer3D({
             
             const m = new THREE.Matrix4();
             m.makeBasis(tangent, bentNormal, bentUp);
-            m.setPosition(foldEdge.start);
+            // Position at fold edge, offset to outer surface
+            const outerOrigin = foldEdge.start.clone().add(bentUp.clone().multiplyScalar(thickness));
+            m.setPosition(outerOrigin);
             
             return (
               <group matrixAutoUpdate={false} matrix={m}>
@@ -834,10 +836,11 @@ export function Viewer3D({
             // Surface normal of the flange (perpendicular to flange surface)
             const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
 
-            // Origin of the flange flat surface (at arc end, inner surface)
+            // Origin of the flange flat surface (at arc end, outer surface facing camera)
             const flangeOrigin = parentEdge.start.clone()
               .add(uDir.clone().multiplyScalar(arcEndU))
-              .add(wDir.clone().multiplyScalar(arcEndW + 0.01));
+              .add(wDir.clone().multiplyScalar(arcEndW))
+              .add(flangeSurfaceNormal.clone().multiplyScalar(thickness));
 
             // Build transform: X=edgeDir, Y=flangeExtDir, Z=flangeSurfaceNormal
             const m = new THREE.Matrix4();
