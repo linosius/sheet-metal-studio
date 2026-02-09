@@ -1,9 +1,10 @@
 import { Button } from '@/components/ui/button';
-import { MousePointer2, Minus, Circle, Square, Check, X } from 'lucide-react';
+import { MousePointer2, Minus, Circle, Square, Check, X, Dot, Move } from 'lucide-react';
+import { FaceSketchTool } from '@/lib/geometry';
 
 interface FaceSketchToolbarProps {
-  activeTool: 'select' | 'line' | 'circle' | 'rect';
-  onToolChange: (tool: 'select' | 'line' | 'circle' | 'rect') => void;
+  activeTool: FaceSketchTool;
+  onToolChange: (tool: FaceSketchTool) => void;
   faceId: string;
   faceWidth: number;
   faceHeight: number;
@@ -31,6 +32,15 @@ export function FaceSketchToolbar({
       <Button variant={activeTool === 'rect' ? 'default' : 'ghost'} size="sm" className="h-7 text-xs gap-1"
         onClick={() => onToolChange('rect')}>
         <Square className="h-3 w-3" /> Rect
+      </Button>
+      <Button variant={activeTool === 'point' ? 'default' : 'ghost'} size="sm" className="h-7 text-xs gap-1"
+        onClick={() => onToolChange('point')}>
+        <Dot className="h-3 w-3" /> Point
+      </Button>
+      <div className="w-px h-5 bg-border mx-1" />
+      <Button variant={activeTool === 'move' ? 'default' : 'ghost'} size="sm" className="h-7 text-xs gap-1"
+        onClick={() => onToolChange('move')}>
+        <Move className="h-3 w-3" /> Move
       </Button>
       <div className="w-px h-5 bg-border mx-1" />
       <span className="text-[10px] font-mono text-muted-foreground">

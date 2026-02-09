@@ -2,7 +2,7 @@ import { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import { Line, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { Point2D, generateId } from '@/lib/sheetmetal';
-import { FaceSketchEntity, FaceSketchLine, FaceSketchCircle, FaceSketchRect } from '@/lib/geometry';
+import { FaceSketchEntity, FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchTool } from '@/lib/geometry';
 
 interface FaceSketchPlaneProps {
   faceOrigin: Point2D;
@@ -12,23 +12,29 @@ interface FaceSketchPlaneProps {
   surfaceZ?: number;
   worldTransform?: THREE.Matrix4;
   entities: FaceSketchEntity[];
-  activeTool: 'select' | 'line' | 'circle' | 'rect';
+  activeTool: FaceSketchTool;
   gridSize: number;
   snapEnabled: boolean;
   onAddEntity: (entity: FaceSketchEntity) => void;
+  onUpdateEntity: (id: string, updates: Partial<FaceSketchEntity>) => void;
   onRemoveEntity: (id: string) => void;
   selectedIds: string[];
-  onSelectEntity: (id: string) => void;
+  onSelectEntity: (id: string, multi?: boolean) => void;
+  onDeselectAll: () => void;
 }
 
 export function FaceSketchPlane({
   faceOrigin, faceWidth, faceHeight, thickness,
   surfaceZ: surfaceZProp, worldTransform,
   entities, activeTool, gridSize, snapEnabled,
-  onAddEntity, onRemoveEntity, selectedIds, onSelectEntity,
+  onAddEntity, onUpdateEntity, onRemoveEntity, selectedIds, onSelectEntity, onDeselectAll,
 }: FaceSketchPlaneProps) {
   const [cursorPos, setCursorPos] = useState<Point2D | null>(null);
   const [drawStart, setDrawStart] = useState<Point2D | null>(null);
+
+  // Move state
+  const [moveStart, setMoveStart] = useState<Point2D | null>(null);
+  const [moveDragging, setMoveDragging] = useState(false);
 
   const z = surfaceZProp ?? (thickness + 0.01);
   const ox = faceOrigin.x;
@@ -45,6 +51,8 @@ export function FaceSketchPlane({
       if (e.key === 'Escape') {
         setDrawStart(null);
         setCursorPos(null);
+        setMoveStart(null);
+        setMoveDragging(false);
       }
     };
     window.addEventListener('keydown', handler);
@@ -72,17 +80,102 @@ export function FaceSketchPlane({
     y: Math.max(0, Math.min(faceHeight, p.y)),
   }), [faceWidth, faceHeight]);
 
+  // Find nearest entity for move pick
+  const findNearestEntity = useCallback((p: Point2D): FaceSketchEntity | null => {
+    let best: FaceSketchEntity | null = null;
+    let bestDist = 10;
+    for (const ent of entities) {
+      let d = Infinity;
+      if (ent.type === 'line') {
+        const dx = ent.end.x - ent.start.x, dy = ent.end.y - ent.start.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 > 0) {
+          const t = Math.max(0, Math.min(1, ((p.x - ent.start.x) * dx + (p.y - ent.start.y) * dy) / len2));
+          const proj = { x: ent.start.x + t * dx, y: ent.start.y + t * dy };
+          d = Math.hypot(p.x - proj.x, p.y - proj.y);
+        }
+      } else if (ent.type === 'rect') {
+        const corners = [
+          ent.origin,
+          { x: ent.origin.x + ent.width, y: ent.origin.y },
+          { x: ent.origin.x + ent.width, y: ent.origin.y + ent.height },
+          { x: ent.origin.x, y: ent.origin.y + ent.height },
+        ];
+        for (let i = 0; i < 4; i++) {
+          const a = corners[i], b = corners[(i + 1) % 4];
+          const ddx = b.x - a.x, ddy = b.y - a.y;
+          const len2 = ddx * ddx + ddy * ddy;
+          if (len2 > 0) {
+            const t = Math.max(0, Math.min(1, ((p.x - a.x) * ddx + (p.y - a.y) * ddy) / len2));
+            const proj = { x: a.x + t * ddx, y: a.y + t * ddy };
+            d = Math.min(d, Math.hypot(p.x - proj.x, p.y - proj.y));
+          }
+        }
+      } else if (ent.type === 'circle') {
+        d = Math.abs(Math.hypot(p.x - ent.center.x, p.y - ent.center.y) - ent.radius);
+      } else if (ent.type === 'point') {
+        d = Math.hypot(p.x - ent.position.x, p.y - ent.position.y);
+      }
+      if (d < bestDist) { bestDist = d; best = ent; }
+    }
+    return best;
+  }, [entities]);
+
+  const moveEntities = useCallback((dx: number, dy: number) => {
+    for (const id of selectedIds) {
+      const ent = entities.find(e => e.id === id);
+      if (!ent) continue;
+      if (ent.type === 'line') {
+        onUpdateEntity(id, { start: { x: ent.start.x + dx, y: ent.start.y + dy }, end: { x: ent.end.x + dx, y: ent.end.y + dy } });
+      } else if (ent.type === 'rect') {
+        onUpdateEntity(id, { origin: { x: ent.origin.x + dx, y: ent.origin.y + dy } });
+      } else if (ent.type === 'circle') {
+        onUpdateEntity(id, { center: { x: ent.center.x + dx, y: ent.center.y + dy } });
+      } else if (ent.type === 'point') {
+        onUpdateEntity(id, { position: { x: ent.position.x + dx, y: ent.position.y + dy } });
+      }
+    }
+  }, [selectedIds, entities, onUpdateEntity]);
+
   const handlePointerMove = useCallback((e: any) => {
-    if (activeTool === 'select') return;
+    if (activeTool === 'select' && !moveDragging) return;
     e.stopPropagation();
     setCursorPos(clamp(toLocal(e.point)));
-  }, [activeTool, toLocal, clamp]);
+  }, [activeTool, toLocal, clamp, moveDragging]);
 
   const handleClick = useCallback((e: any) => {
     e.stopPropagation();
     const local = clamp(toLocal(e.point));
 
-    if (activeTool === 'select') return;
+    if (activeTool === 'select') {
+      onDeselectAll();
+      return;
+    }
+
+    if (activeTool === 'point') {
+      onAddEntity({ id: generateId(), type: 'point', position: local });
+      return;
+    }
+
+    if (activeTool === 'move') {
+      if (moveDragging && moveStart) {
+        const dx = local.x - moveStart.x, dy = local.y - moveStart.y;
+        moveEntities(dx, dy);
+        setMoveStart(null);
+        setMoveDragging(false);
+      } else if (selectedIds.length > 0) {
+        setMoveStart(local);
+        setMoveDragging(true);
+      } else {
+        const nearest = findNearestEntity(local);
+        if (nearest) {
+          onSelectEntity(nearest.id, false);
+          setMoveStart(local);
+          setMoveDragging(true);
+        }
+      }
+      return;
+    }
 
     if (activeTool === 'line') {
       if (!drawStart) {
@@ -91,7 +184,7 @@ export function FaceSketchPlane({
         if (Math.hypot(local.x - drawStart.x, local.y - drawStart.y) > 1) {
           onAddEntity({ id: generateId(), type: 'line', start: drawStart, end: local });
         }
-        setDrawStart(local); // chain lines
+        setDrawStart(local);
       }
     } else if (activeTool === 'circle') {
       if (!drawStart) {
@@ -119,12 +212,14 @@ export function FaceSketchPlane({
         setDrawStart(null);
       }
     }
-  }, [activeTool, drawStart, toLocal, clamp, onAddEntity]);
+  }, [activeTool, drawStart, toLocal, clamp, onAddEntity, onDeselectAll, selectedIds, moveStart, moveDragging, moveEntities, findNearestEntity, onSelectEntity]);
 
   // Reset draw state when tool changes
   useEffect(() => {
     setDrawStart(null);
     setCursorPos(null);
+    setMoveStart(null);
+    setMoveDragging(false);
   }, [activeTool]);
 
   const gridLines = useMemo(() => {
@@ -216,6 +311,46 @@ export function FaceSketchPlane({
         />
       )}
 
+      {/* Preview: move ghost */}
+      {moveDragging && moveStart && cursorPos && activeTool === 'move' && (() => {
+        const dx = cursorPos.x - moveStart.x;
+        const dy = cursorPos.y - moveStart.y;
+        return (
+          <group>
+            <Line
+              points={[[ox + moveStart.x, oy + moveStart.y, z + 0.02], [ox + cursorPos.x, oy + cursorPos.y, z + 0.02]]}
+              color="#22c55e" lineWidth={1} dashed dashSize={2} gapSize={1}
+            />
+            {selectedIds.map(id => {
+              const ent = entities.find(e => e.id === id);
+              if (!ent) return null;
+              if (ent.type === 'line') {
+                return <Line key={`mv-${id}`}
+                  points={[[ox + ent.start.x + dx, oy + ent.start.y + dy, z + 0.02], [ox + ent.end.x + dx, oy + ent.end.y + dy, z + 0.02]]}
+                  color="#22c55e" lineWidth={1.5} dashed dashSize={2} gapSize={1} />;
+              }
+              if (ent.type === 'rect') {
+                return <Line key={`mv-${id}`}
+                  points={[
+                    [ox + ent.origin.x + dx, oy + ent.origin.y + dy, z + 0.02],
+                    [ox + ent.origin.x + ent.width + dx, oy + ent.origin.y + dy, z + 0.02],
+                    [ox + ent.origin.x + ent.width + dx, oy + ent.origin.y + ent.height + dy, z + 0.02],
+                    [ox + ent.origin.x + dx, oy + ent.origin.y + ent.height + dy, z + 0.02],
+                    [ox + ent.origin.x + dx, oy + ent.origin.y + dy, z + 0.02],
+                  ]}
+                  color="#22c55e" lineWidth={1.5} dashed dashSize={2} gapSize={1} />;
+              }
+              if (ent.type === 'circle') {
+                return <Line key={`mv-${id}`}
+                  points={getCirclePoints({ x: ent.center.x + dx, y: ent.center.y + dy }, ent.radius)}
+                  color="#22c55e" lineWidth={1.5} dashed dashSize={2} gapSize={1} />;
+              }
+              return null;
+            })}
+          </group>
+        );
+      })()}
+
       {/* Rendered entities */}
       {entities.map(entity => {
         const isSelected = selectedIds.includes(entity.id);
@@ -240,9 +375,9 @@ export function FaceSketchPlane({
                   {len.toFixed(1)} mm
                 </div>
               </Html>
-              {activeTool === 'select' && (
+              {(activeTool === 'select' || activeTool === 'move') && (
                 <mesh position={mid} quaternion={quat}
-                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id); }}
+                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id, ev.shiftKey); }}
                   onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
                   onPointerOut={() => { document.body.style.cursor = 'default'; }}>
                   <boxGeometry args={[len, 3, 3]} />
@@ -263,9 +398,9 @@ export function FaceSketchPlane({
                   R{entity.radius.toFixed(1)}
                 </div>
               </Html>
-              {activeTool === 'select' && (
+              {(activeTool === 'select' || activeTool === 'move') && (
                 <mesh position={[ox + entity.center.x, oy + entity.center.y, z]}
-                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id); }}
+                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id, ev.shiftKey); }}
                   onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
                   onPointerOut={() => { document.body.style.cursor = 'default'; }}>
                   <torusGeometry args={[entity.radius, 2, 4, 32]} />
@@ -295,12 +430,30 @@ export function FaceSketchPlane({
                   {width.toFixed(1)} × {height.toFixed(1)}
                 </div>
               </Html>
-              {activeTool === 'select' && (
+              {(activeTool === 'select' || activeTool === 'move') && (
                 <mesh position={[ox + origin.x + width / 2, oy + origin.y + height / 2, z]}
-                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id); }}
+                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id, ev.shiftKey); }}
                   onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
                   onPointerOut={() => { document.body.style.cursor = 'default'; }}>
                   <boxGeometry args={[width, height, 2]} />
+                  <meshBasicMaterial transparent opacity={0} />
+                </mesh>
+              )}
+            </group>
+          );
+        }
+
+        if (entity.type === 'point') {
+          return (
+            <group key={entity.id}>
+              <Line points={[[ox + entity.position.x - 2, oy + entity.position.y, z + 0.01], [ox + entity.position.x + 2, oy + entity.position.y, z + 0.01]]} color={color} lineWidth={lw} />
+              <Line points={[[ox + entity.position.x, oy + entity.position.y - 2, z + 0.01], [ox + entity.position.x, oy + entity.position.y + 2, z + 0.01]]} color={color} lineWidth={lw} />
+              {(activeTool === 'select' || activeTool === 'move') && (
+                <mesh position={[ox + entity.position.x, oy + entity.position.y, z]}
+                  onClick={(ev) => { ev.stopPropagation(); onSelectEntity(entity.id, ev.shiftKey); }}
+                  onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
+                  onPointerOut={() => { document.body.style.cursor = 'default'; }}>
+                  <sphereGeometry args={[2]} />
                   <meshBasicMaterial transparent opacity={0} />
                 </mesh>
               )}

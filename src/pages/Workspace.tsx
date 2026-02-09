@@ -17,7 +17,7 @@ import { useSketchStore } from '@/hooks/useSketchStore';
 import { useActionHistory } from '@/hooks/useActionHistory';
 import {
   extractProfile, getAllSelectableEdges, Flange, Fold, FaceSketch,
-  FaceSketchLine, FaceSketchEntity, classifySketchLineAsFold,
+  FaceSketchLine, FaceSketchEntity, FaceSketchTool, classifySketchLineAsFold,
   getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine,
   computeFoldEdge, getFoldMovingHeights, getFaceDimensions,
 } from '@/lib/geometry';
@@ -46,7 +46,7 @@ export default function Workspace() {
   const [foldDialogOpen, setFoldDialogOpen] = useState(false);
 
   // In-3D sketch plane state
-  const [sketchTool, setSketchTool] = useState<'select' | 'line' | 'circle' | 'rect'>('line');
+  const [sketchTool, setSketchTool] = useState<FaceSketchTool>('line');
   const [sketchEntities, setSketchEntities] = useState<FaceSketchEntity[]>([]);
   const [sketchSelectedIds, setSketchSelectedIds] = useState<string[]>([]);
   const cameraApiRef = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void } | null>(null);
@@ -183,8 +183,16 @@ export default function Workspace() {
     setSketchSelectedIds(prev => prev.filter(sid => sid !== id));
   }, []);
 
-  const handleSketchSelectEntity = useCallback((id: string) => {
-    setSketchSelectedIds([id]);
+  const handleSketchSelectEntity = useCallback((id: string, multi?: boolean) => {
+    setSketchSelectedIds(prev => multi ? [...prev, id] : [id]);
+  }, []);
+
+  const handleSketchUpdateEntity = useCallback((id: string, updates: Partial<FaceSketchEntity>) => {
+    setSketchEntities(prev => prev.map(e => e.id === id ? { ...e, ...updates } as FaceSketchEntity : e));
+  }, []);
+
+  const handleSketchDeselectAll = useCallback(() => {
+    setSketchSelectedIds([]);
   }, []);
 
   const handleFinishSketch = useCallback(() => {
@@ -478,6 +486,8 @@ export default function Workspace() {
           case 'l': setSketchTool('line'); break;
           case 'c': setSketchTool('circle'); break;
           case 'r': setSketchTool('rect'); break;
+          case 'p': setSketchTool('point'); break;
+          case 'm': setSketchTool('move'); break;
           case 'delete':
           case 'backspace':
             if (sketchSelectedIds.length > 0) {
@@ -716,6 +726,8 @@ export default function Workspace() {
                   sketchSnapEnabled={sketch.snapEnabled}
                   onSketchAddEntity={handleSketchAddEntity}
                   onSketchRemoveEntity={handleSketchRemoveEntity}
+                  onSketchUpdateEntity={handleSketchUpdateEntity}
+                  onSketchDeselectAll={handleSketchDeselectAll}
                   sketchSelectedIds={sketchSelectedIds}
                   onSketchSelectEntity={handleSketchSelectEntity}
                   cameraApiRef={cameraApiRef}
