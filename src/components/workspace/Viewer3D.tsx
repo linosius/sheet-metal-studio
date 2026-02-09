@@ -63,11 +63,11 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
+        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
       {edgesGeo && (
         <lineSegments geometry={edgesGeo}>
-          <lineBasicMaterial color={showLines ? "#475569" : "#b0b5ba"} linewidth={1} />
+          <lineBasicMaterial color={showLines ? "#475569" : "#8a9099"} linewidth={1} />
         </lineSegments>
       )}
       {showLines && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
@@ -126,7 +126,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
+        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
       {/* Tip (flat faces) */}
       <mesh
@@ -135,12 +135,12 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
+        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
       {/* Tip edge outlines — always visible, subtle in view mode */}
       {tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
-          <lineBasicMaterial color={showLines ? "#475569" : "#b0b5ba"} linewidth={1} />
+          <lineBasicMaterial color={showLines ? "#475569" : "#8a9099"} linewidth={1} />
         </lineSegments>
       )}
       {/* Bend zone tangent lines */}
@@ -329,12 +329,12 @@ function SheetMetalMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
+        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
 
       {/* Wireframe edges — always visible, subtle color in view mode */}
       <lineSegments geometry={edgesGeometry}>
-        <lineBasicMaterial color={isViewMode ? "#b0b5ba" : "#475569"} linewidth={1} />
+        <lineBasicMaterial color={isViewMode ? "#8a9099" : "#475569"} linewidth={1} />
       </lineSegments>
 
       {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
@@ -512,13 +512,33 @@ function CameraApi({ apiRef, defaultPos, defaultTarget }: {
   return null;
 }
 
+function InventorBackground() {
+  const { scene } = useThree();
+  useMemo(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 2;
+    canvas.height = 256;
+    const ctx = canvas.getContext('2d')!;
+    const gradient = ctx.createLinearGradient(0, 0, 0, 256);
+    gradient.addColorStop(0, '#c8d6e5');   // top: soft blue
+    gradient.addColorStop(1, '#edf1f5');   // bottom: near-white
+    ctx.fillStyle = gradient;
+    ctx.fillRect(0, 0, 2, 256);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.needsUpdate = true;
+    scene.background = tex;
+  }, [scene]);
+  return null;
+}
+
 function SceneSetup() {
   return (
     <>
-      <ambientLight intensity={1.0} />
-      <directionalLight position={[50, 50, 50]} intensity={0.35} />
-      <directionalLight position={[-30, -20, 40]} intensity={0.25} />
-      <directionalLight position={[0, -50, -30]} intensity={0.2} />
+      <InventorBackground />
+      <ambientLight intensity={0.85} />
+      <directionalLight position={[50, 80, 60]} intensity={0.5} />
+      <directionalLight position={[-40, -30, 50]} intensity={0.3} />
+      <directionalLight position={[0, 50, -40]} intensity={0.15} />
     </>
   );
 }
