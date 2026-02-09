@@ -415,7 +415,7 @@ function SheetMetalMesh({
       <mesh
         geometry={geometry}
         userData={{ faceType: 'base' }}
-        raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot') ? noopRaycast as any : undefined}
+        raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot' || isFoldMode) ? noopRaycast as any : undefined}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
             // Skip if a fold/flange face was hit closer

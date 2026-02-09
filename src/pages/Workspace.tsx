@@ -756,6 +756,7 @@ export default function Workspace() {
               flanges={flanges}
               kFactor={sketch.sheetMetalDefaults.kFactor}
               folds={folds}
+              cutouts={cutouts}
             />
           )}
 
