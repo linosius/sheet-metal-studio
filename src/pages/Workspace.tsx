@@ -17,7 +17,7 @@ import {
   extractProfile, getAllSelectableEdges, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchEntity, classifySketchLineAsFold,
   getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine,
-  computeFoldEdge, getFoldMovingHeights,
+  computeFoldEdge, getFoldMovingHeights, getFaceDimensions,
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
 import { toast } from 'sonner';
@@ -249,6 +249,7 @@ export default function Workspace() {
   // ── Sketch line click handler (fold sub-mode) ──
   const handleSketchLineClick = useCallback((lineId: string) => {
     if (subMode !== 'fold') return;
+    if (!profile) return;
     if (folds.some(f => f.sketchLineId === lineId)) {
       toast.error('This line already has a fold applied');
       return;
@@ -258,48 +259,55 @@ export default function Workspace() {
     const parentFace = faceSketches.find(fs =>
       fs.entities.some(e => e.id === lineId)
     );
-    if (parentFace && parentFace.faceId !== 'base_top' && parentFace.faceId !== 'base_bot') {
-      toast.error('Folds on flange/fold faces are not yet supported', {
-        description: 'Currently, fold lines can only be drawn on the base face (top or bottom).',
-      });
+    const faceId = parentFace?.faceId ?? 'base_top';
+
+    // Get face dimensions for classification
+    const faceDims = getFaceDimensions(faceId, profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
+    if (!faceDims) {
+      toast.error('Cannot determine face dimensions');
       return;
     }
 
-    // Validate fold qualification immediately
-    if (profileBounds) {
-      const sketchLine = faceSketches
-        .flatMap(fs => fs.entities)
-        .find(e => e.id === lineId && e.type === 'line') as FaceSketchLine | undefined;
-      if (sketchLine) {
-        const classification = classifySketchLineAsFold(sketchLine, profileBounds.width, profileBounds.height);
-        if (!classification) {
-          toast.error('Invalid fold line', {
-            description: 'Line must span edge-to-edge (full width or height) to be used as a fold line.',
-          });
-          return;
-        }
+    // Validate fold qualification
+    const sketchLine = parentFace?.entities.find(e => e.id === lineId && e.type === 'line') as FaceSketchLine | undefined;
+    if (sketchLine) {
+      const classification = classifySketchLineAsFold(sketchLine, faceDims.width, faceDims.height);
+      if (!classification) {
+        toast.error('Invalid fold line', {
+          description: 'Line must span edge-to-edge (full width or height) to be used as a fold line.',
+        });
+        return;
       }
     }
 
     setSelectedSketchLineId(lineId);
     setFoldDialogOpen(true);
-  }, [subMode, folds, profileBounds, faceSketches]);
+  }, [subMode, folds, profile, faceSketches, flanges, sketch.sheetMetalDefaults.thickness]);
 
-  // ── Apply fold from dialog (NO LONGER clears flanges) ──
+  // ── Apply fold from dialog ──
   const handleApplyFold = useCallback((params: {
     angle: number;
     direction: 'up' | 'down';
     bendRadius: number;
     foldLocation: 'centerline' | 'material-inside' | 'material-outside';
   }) => {
-    if (!selectedSketchLineId || !profile || !profileBounds) return;
+    if (!selectedSketchLineId || !profile) return;
+
+    // Find parent face
+    const parentFace = faceSketches.find(fs =>
+      fs.entities.some(e => e.id === selectedSketchLineId)
+    );
+    const faceId = parentFace?.faceId ?? 'base_top';
+
+    const faceDims = getFaceDimensions(faceId, profile, sketch.sheetMetalDefaults.thickness, flanges, folds);
+    if (!faceDims) return;
 
     const sketchLine = faceSketches
       .flatMap(fs => fs.entities)
       .find(e => e.id === selectedSketchLineId && e.type === 'line') as FaceSketchLine | undefined;
     if (!sketchLine) return;
 
-    const classification = classifySketchLineAsFold(sketchLine, profileBounds.width, profileBounds.height);
+    const classification = classifySketchLineAsFold(sketchLine, faceDims.width, faceDims.height);
     if (!classification) {
       toast.error('Invalid fold line', {
         description: 'Line must span edge-to-edge (opposite boundaries) to be used as a fold line.',
@@ -317,7 +325,7 @@ export default function Workspace() {
       direction: params.direction,
       bendRadius: params.bendRadius,
       sketchLineId: selectedSketchLineId,
-      faceId: 'base_top',
+      faceId: faceId,
       foldLocation: params.foldLocation,
     };
 
@@ -329,9 +337,9 @@ export default function Workspace() {
     setFoldDialogOpen(false);
     setSelectedSketchLineId(null);
     toast.success('Fold applied', {
-      description: `(${classification.lineStart.x.toFixed(0)},${classification.lineStart.y.toFixed(0)})→(${classification.lineEnd.x.toFixed(0)},${classification.lineEnd.y.toFixed(0)}), ${params.angle}° ${params.direction}`,
+      description: `${params.angle}° ${params.direction} on ${faceId}`,
     });
-  }, [selectedSketchLineId, profile, profileBounds, faceSketches, flanges, folds, history]);
+  }, [selectedSketchLineId, profile, faceSketches, flanges, folds, history, sketch.sheetMetalDefaults.thickness]);
 
   // ── Remove fold (NO LONGER clears flanges) ──
   const handleRemoveFold = useCallback((id: string) => {
