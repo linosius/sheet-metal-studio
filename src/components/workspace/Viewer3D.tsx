@@ -517,9 +517,10 @@ function CameraApi({ apiRef, defaultPos, defaultTarget }: {
 function SceneSetup() {
   return (
     <>
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[50, 50, 50]} intensity={0.8} />
-      <directionalLight position={[-30, -20, 40]} intensity={0.4} />
+      <ambientLight intensity={1.0} />
+      <directionalLight position={[50, 50, 50]} intensity={0.35} />
+      <directionalLight position={[-30, -20, 40]} intensity={0.25} />
+      <directionalLight position={[0, -50, -30]} intensity={0.2} />
     </>
   );
 }
