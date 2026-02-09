@@ -1,6 +1,6 @@
 import { Point2D } from '@/lib/sheetmetal';
 import { bendAllowance } from '@/lib/sheetmetal';
-import { Flange, Fold, getFoldNormal, clipPolygonByLine } from '@/lib/geometry';
+import { Flange, Fold, getFoldNormal, clipPolygonByLine, foldLineToInnerEdgeOffset } from '@/lib/geometry';
 
 // ========== Flat Pattern Types ==========
 
@@ -81,10 +81,12 @@ export function computeFlatPattern(
 
   // ---- Process folds: mirror moving polygon across fold line ----
   for (const fold of folds) {
-    const foldStart = { x: profMinX + fold.lineStart.x, y: profMinY + fold.lineStart.y };
-    const foldEnd = { x: profMinX + fold.lineEnd.x, y: profMinY + fold.lineEnd.y };
-
     const normal = getFoldNormal(fold, faceWidth, faceHeight);
+
+    // Shift from drawn fold line to inner edge
+    const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+    const foldStart = { x: profMinX + fold.lineStart.x - normal.x * off, y: profMinY + fold.lineStart.y - normal.y * off };
+    const foldEnd = { x: profMinX + fold.lineEnd.x - normal.x * off, y: profMinY + fold.lineEnd.y - normal.y * off };
 
     // Get moving polygon (side where dot >= 0, i.e. the normal/moving side)
     const negNormal = { x: -normal.x, y: -normal.y };
@@ -104,7 +106,7 @@ export function computeFlatPattern(
 
     regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: unfoldedPoly });
 
-    // Bend lines at the fold line position
+    // Bend lines at the inner edge position
     bendLines.push({
       start: { ...foldStart }, end: { ...foldEnd },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
