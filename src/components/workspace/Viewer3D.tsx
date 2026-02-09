@@ -88,6 +88,9 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
         <meshStandardMaterial
           color={isSketchMode && hovered ? '#93c5fd' : '#bcc2c8'}
           metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
+          polygonOffset={!!(childFolds && childFolds.length > 0)}
+          polygonOffsetFactor={1}
+          polygonOffsetUnits={1}
         />
       </mesh>
       {showLines && edgesGeo && (
