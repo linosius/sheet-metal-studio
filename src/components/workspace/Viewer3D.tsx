@@ -283,9 +283,10 @@ function SheetMetalMesh({
         ids.add(edge.id);
       }
     }
-    // Mark fold side edges (thickness-length, not useful for flanges)
+    // Mark fold side and tip edges (not useful for flanges on base face)
     for (const edge of edges) {
-      if (edge.id.includes('_side_s_fold_') || edge.id.includes('_side_e_fold_')) {
+      if (edge.id.includes('_side_s_fold_') || edge.id.includes('_side_e_fold_') ||
+          edge.id.includes('_tip_outer_fold_') || edge.id.includes('_tip_inner_fold_')) {
         ids.add(edge.id);
       }
     }

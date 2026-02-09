@@ -1,6 +1,6 @@
 import { Point2D } from '@/lib/sheetmetal';
 import { bendAllowance } from '@/lib/sheetmetal';
-import { Flange, Fold, getFoldNormal, clipPolygonByLine, foldLineToInnerEdgeOffset } from '@/lib/geometry';
+import { Flange, Fold, getFoldNormal, clipPolygonByLine, foldLineToInnerEdgeOffset, getFixedProfile } from '@/lib/geometry';
 
 // ========== Flat Pattern Types ==========
 
@@ -59,12 +59,15 @@ export function computeFlatPattern(
   const faceWidth = Math.max(...pxs) - profMinX;
   const faceHeight = Math.max(...pys) - profMinY;
 
-  // ---- Build flat edge map from original profile for flanges ----
+  // ---- Build flat edge map from FIXED (clipped) profile for flanges ----
+  // This ensures flanges only extend along the portion of the edge that
+  // remains after folds have been applied.
+  const fixedProfile = getFixedProfile(profile, folds, thickness);
   const flatEdges = new Map<string, FlatEdge>();
 
-  for (let i = 0; i < profile.length; i++) {
-    const curr = profile[i];
-    const next = profile[(i + 1) % profile.length];
+  for (let i = 0; i < fixedProfile.length; i++) {
+    const curr = fixedProfile[i];
+    const next = fixedProfile[(i + 1) % fixedProfile.length];
     const dx = next.x - curr.x;
     const dy = next.y - curr.y;
     const len = Math.hypot(dx, dy);
@@ -73,8 +76,26 @@ export function computeFlatPattern(
     const nx = dy / len;
     const ny = -dx / len;
 
-    flatEdges.set(`edge_top_${i}`, { start: curr, end: next, outward: { x: nx, y: ny } });
-    flatEdges.set(`edge_bot_${i}`, { start: curr, end: next, outward: { x: nx, y: ny } });
+    // Map to original edge indices by finding which original edge this segment lies on
+    for (let j = 0; j < profile.length; j++) {
+      const origCurr = profile[j];
+      const origNext = profile[(j + 1) % profile.length];
+      const origDx = origNext.x - origCurr.x;
+      const origDy = origNext.y - origCurr.y;
+      const origLen = Math.hypot(origDx, origDy);
+      if (origLen < 0.01) continue;
+
+      // Check if fixed edge segment lies on this original edge
+      const crossCurr = Math.abs((curr.x - origCurr.x) * origDy - (curr.y - origCurr.y) * origDx) / origLen;
+      const crossNext = Math.abs((next.x - origCurr.x) * origDy - (next.y - origCurr.y) * origDx) / origLen;
+      
+      if (crossCurr < 0.5 && crossNext < 0.5) {
+        // This fixed edge segment is on original edge j
+        flatEdges.set(`edge_top_${j}`, { start: curr, end: next, outward: { x: nx, y: ny } });
+        flatEdges.set(`edge_bot_${j}`, { start: curr, end: next, outward: { x: nx, y: ny } });
+        break;
+      }
+    }
   }
 
   let bendIndex = 1;
