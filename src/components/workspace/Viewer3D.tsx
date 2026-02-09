@@ -13,6 +13,7 @@ import {
   getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions, FlangeTipClipLine,
+  ProfileCutout, getFixedCutouts, getMovingCutouts,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -29,7 +30,7 @@ interface SheetMetalMeshProps {
   selectedSketchLineId: string | null;
   onSketchLineClick?: (lineId: string) => void;
   activeSketchFaceId?: string | null;
-  cutouts?: { center: Point2D; radius: number }[];
+  cutouts?: ProfileCutout[];
 }
 
 const noopRaycast = () => {};
@@ -117,7 +118,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
 
 function FoldMesh({
   profile, fold, otherFolds, thickness, isSketchMode, isFoldMode, onFaceClick, showLines = true, activeSketchFaceId,
-  childFolds,
+  childFolds, movingCutouts,
 }: {
   profile: Point2D[];
   fold: Fold;
@@ -129,12 +130,13 @@ function FoldMesh({
   showLines?: boolean;
   activeSketchFaceId?: string | null;
   childFolds?: Fold[];
+  movingCutouts?: Point2D[][];
 }) {
   const isActiveSketch = activeSketchFaceId === `fold_face_${fold.id}`;
   const [hovered, setHovered] = useState(false);
   const result = useMemo(
-    () => createFoldMesh(profile, fold, otherFolds, thickness, childFolds),
-    [profile, fold, otherFolds, thickness, childFolds],
+    () => createFoldMesh(profile, fold, otherFolds, thickness, childFolds, movingCutouts),
+    [profile, fold, otherFolds, thickness, childFolds, movingCutouts],
   );
 
   const tipEdgesGeo = useMemo(() => {
@@ -322,7 +324,11 @@ function SheetMetalMesh({
   activeSketchFaceId, cutouts,
 }: SheetMetalMeshProps) {
   const fixedProfile = useMemo(() => getFixedProfile(profile, folds, thickness), [profile, folds, thickness]);
-  const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness, cutouts), [fixedProfile, thickness, cutouts]);
+  const fixedCutoutPolygons = useMemo(
+    () => cutouts && cutouts.length > 0 ? getFixedCutouts(cutouts, folds, profile, thickness) : undefined,
+    [cutouts, folds, profile, thickness],
+  );
+  const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons), [fixedProfile, thickness, fixedCutoutPolygons]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
@@ -734,6 +740,9 @@ function SheetMetalMesh({
         const parentId = getFoldParentId(fold, folds, profile);
         const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
         const foldChildFolds = nonBaseFolds.filter(f => f.faceId === `fold_face_${fold.id}`);
+        const foldMovingCutouts = cutouts && cutouts.length > 0
+          ? getMovingCutouts(cutouts, fold, profile, thickness)
+          : undefined;
 
         const mesh = (
           <FoldMesh
@@ -747,6 +756,7 @@ function SheetMetalMesh({
             showLines={!isViewMode && !isEdgeMode}
             activeSketchFaceId={activeSketchFaceId}
             childFolds={foldChildFolds.length > 0 ? foldChildFolds : undefined}
+            movingCutouts={foldMovingCutouts && foldMovingCutouts.length > 0 ? foldMovingCutouts : undefined}
           />
         );
 
@@ -912,7 +922,7 @@ interface Viewer3DProps {
   selectedSketchLineId?: string | null;
   onSketchLineClick?: (lineId: string) => void;
   children?: React.ReactNode;
-  cutouts?: { center: Point2D; radius: number }[];
+  cutouts?: ProfileCutout[];
   // Sketch plane props
   sketchPlaneActive?: boolean;
   sketchFaceId?: string | null;
