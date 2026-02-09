@@ -486,6 +486,7 @@ export default function Workspace() {
       switch (e.key.toLowerCase()) {
         case 'v': sketch.setActiveTool('select'); break;
         case 'l': sketch.setActiveTool('line'); break;
+        case 'c': sketch.setActiveTool('circle'); break;
         case 'r': sketch.setActiveTool('rect'); break;
       }
     };
@@ -586,21 +587,21 @@ export default function Workspace() {
 
       {/* ── Main area ── */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Left toolbar (sketch) */}
-        {currentStep === 'sketch' && (
-          <div className="w-12 border-r bg-cad-toolbar flex flex-col items-center py-3 gap-2 shrink-0">
+        {/* Content column */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Sketch ribbon toolbar */}
+          {currentStep === 'sketch' && (
             <SketchToolbar
               activeTool={sketch.activeTool}
               snapEnabled={sketch.snapEnabled}
+              gridSize={sketch.gridSize}
               onToolChange={sketch.setActiveTool}
               onSnapToggle={() => sketch.setSnapEnabled(!sketch.snapEnabled)}
+              onGridSizeChange={sketch.setGridSize}
               onClear={sketch.clearAll}
             />
-          </div>
-        )}
+          )}
 
-        {/* Content column */}
-        <div className="flex-1 flex flex-col overflow-hidden">
           {/* Sub-mode toolbar for Fold & Flanges step */}
           {currentStep === 'fold-flanges' && !activeFaceSketch && (
             <div className="flex items-center gap-2 px-3 py-1.5 border-b bg-muted/30 shrink-0">
@@ -648,6 +649,7 @@ export default function Workspace() {
               snapEnabled={sketch.snapEnabled}
               onAddLine={sketch.addLine}
               onAddRect={sketch.addRect}
+              onAddCircle={sketch.addCircle}
               onSelectEntity={sketch.selectEntity}
               onDeselectAll={sketch.deselectAll}
               onRemoveEntities={sketch.removeEntities}

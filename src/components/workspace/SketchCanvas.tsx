@@ -11,6 +11,7 @@ interface SketchCanvasProps {
   snapEnabled: boolean;
   onAddLine: (start: Point2D, end: Point2D) => void;
   onAddRect: (origin: Point2D, width: number, height: number) => void;
+  onAddCircle: (center: Point2D, radius: number) => void;
   onSelectEntity: (id: string, multi?: boolean) => void;
   onDeselectAll: () => void;
   onRemoveEntities: (ids: string[]) => void;
@@ -28,6 +29,7 @@ export function SketchCanvas({
   snapEnabled,
   onAddLine,
   onAddRect,
+  onAddCircle,
   onSelectEntity,
   onDeselectAll,
   onRemoveEntities,
@@ -76,7 +78,7 @@ export function SketchCanvas({
       return;
     }
 
-    if (activeTool === 'line' || activeTool === 'rect') {
+    if (activeTool === 'line' || activeTool === 'rect' || activeTool === 'circle') {
       if (!drawStart) {
         setDrawStart(snapped);
       } else {
@@ -98,10 +100,16 @@ export function SketchCanvas({
             );
           }
           setDrawStart(null);
+        } else if (activeTool === 'circle') {
+          const r = distance2D(drawStart, snapped);
+          if (r > 0.5) {
+            onAddCircle(drawStart, r);
+          }
+          setDrawStart(null);
         }
       }
     }
-  }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onDeselectAll, viewBox]);
+  }, [activeTool, drawStart, svgToWorld, getSnappedPoint, onAddLine, onAddRect, onAddCircle, onDeselectAll, viewBox]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
     const worldPos = svgToWorld(e.clientX, e.clientY);
@@ -265,9 +273,38 @@ export function SketchCanvas({
       );
     }
 
+    if (entity.type === 'circle') {
+      return (
+        <g key={entity.id} onClick={(e) => { e.stopPropagation(); onSelectEntity(entity.id, e.shiftKey); }}>
+          <circle
+            cx={entity.center.x}
+            cy={entity.center.y}
+            r={entity.radius}
+            stroke={strokeColor}
+            strokeWidth={strokeWidth}
+            fill="none"
+            className="cursor-pointer"
+          />
+          {/* Radius dimension */}
+          <text
+            x={entity.center.x + entity.radius + 3}
+            y={entity.center.y}
+            fill="hsl(var(--cad-dimension))"
+            fontSize={3}
+            fontFamily="JetBrains Mono, monospace"
+            textAnchor="start"
+            dominantBaseline="middle"
+          >
+            R{entity.radius.toFixed(1)}
+          </text>
+          {/* Center point */}
+          <circle cx={entity.center.x} cy={entity.center.y} r={0.8} fill={strokeColor} />
+        </g>
+      );
+    }
+
     return null;
   };
-
   // Preview shape while drawing
   const renderPreview = () => {
     if (!drawStart) return null;
@@ -299,6 +336,38 @@ export function SketchCanvas({
           fill="hsl(var(--cad-sketch-line) / 0.05)"
           opacity={0.7}
         />
+      );
+    }
+
+    if (activeTool === 'circle') {
+      const r = distance2D(drawStart, cursorPos);
+      return (
+        <g opacity={0.7}>
+          <circle
+            cx={drawStart.x} cy={drawStart.y} r={r}
+            stroke="hsl(var(--cad-sketch-line))"
+            strokeWidth={0.6}
+            strokeDasharray="2 1"
+            fill="none"
+          />
+          {/* Radius line */}
+          <line
+            x1={drawStart.x} y1={drawStart.y}
+            x2={cursorPos.x} y2={cursorPos.y}
+            stroke="hsl(var(--cad-dimension))"
+            strokeWidth={0.3}
+            strokeDasharray="1 1"
+          />
+          <text
+            x={(drawStart.x + cursorPos.x) / 2 + 2}
+            y={(drawStart.y + cursorPos.y) / 2 - 2}
+            fill="hsl(var(--cad-dimension))"
+            fontSize={3}
+            fontFamily="JetBrains Mono, monospace"
+          >
+            R{r.toFixed(1)}
+          </text>
+        </g>
       );
     }
 
