@@ -67,14 +67,14 @@ export default function Workspace() {
     setActiveFaceSketch(null);
     setSketchEntities([]);
     setSketchSelectedIds([]);
-    setCurrentStep('base-face');
+    setCurrentStep('fold-flanges');
     toast.success('Base face created', {
       description: `Profile with ${p.length} vertices, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
     });
   }, [sketch.entities, sketch.sheetMetalDefaults.thickness, history]);
 
   const handleStepClick = useCallback((step: WorkflowStep) => {
-    if ((step === 'base-face' || step === 'fold-flanges' || step === 'unfold') && !profile) {
+    if ((step === 'fold-flanges' || step === 'unfold') && !profile) {
       toast.error('Convert your sketch to a base face first');
       return;
     }
@@ -491,7 +491,7 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', handler);
   }, [currentStep, sketch.setActiveTool, activeFaceSketch, sketchSelectedIds, history]);
 
-  const is3DStep = currentStep === 'base-face' || currentStep === 'fold-flanges';
+  const is3DStep = currentStep === 'fold-flanges';
   const isUnfoldStep = currentStep === 'unfold';
 
   const selectedEdge = useMemo(() => {
@@ -563,13 +563,6 @@ export default function Workspace() {
                 onClick={() => setCurrentStep('sketch')}>
                 Back to Sketch
               </Button>
-              {currentStep === 'base-face' && (
-                <Button size="sm" className="h-8 text-xs gap-1.5"
-                  onClick={() => setCurrentStep('fold-flanges')}>
-                  Fold &amp; Flanges
-                  <ArrowRight className="h-3 w-3" />
-                </Button>
-              )}
               {currentStep === 'fold-flanges' && (
                 <Button size="sm" className="h-8 text-xs gap-1.5"
                   onClick={() => setCurrentStep('unfold')}>

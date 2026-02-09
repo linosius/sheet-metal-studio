@@ -1,6 +1,6 @@
 import { cn } from '@/lib/utils';
 
-export type WorkflowStep = 'sketch' | 'base-face' | 'fold-flanges' | 'unfold' | 'export';
+export type WorkflowStep = 'sketch' | 'fold-flanges' | 'unfold' | 'export';
 
 interface WorkflowBarProps {
   currentStep: WorkflowStep;
@@ -9,10 +9,9 @@ interface WorkflowBarProps {
 
 const steps: { id: WorkflowStep; label: string; number: number }[] = [
   { id: 'sketch', label: 'Sketch', number: 1 },
-  { id: 'base-face', label: 'Base Face', number: 2 },
-  { id: 'fold-flanges', label: 'Fold & Flanges', number: 3 },
-  { id: 'unfold', label: 'Unfold', number: 4 },
-  { id: 'export', label: 'Export', number: 5 },
+  { id: 'fold-flanges', label: 'Fold & Flanges', number: 2 },
+  { id: 'unfold', label: 'Unfold', number: 3 },
+  { id: 'export', label: 'Export', number: 4 },
 ];
 
 export function WorkflowBar({ currentStep, onStepClick }: WorkflowBarProps) {
