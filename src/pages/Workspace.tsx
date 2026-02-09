@@ -254,6 +254,17 @@ export default function Workspace() {
       return;
     }
 
+    // Determine which face this sketch line belongs to
+    const parentFace = faceSketches.find(fs =>
+      fs.entities.some(e => e.id === lineId)
+    );
+    if (parentFace && parentFace.faceId !== 'base_top' && parentFace.faceId !== 'base_bot') {
+      toast.error('Folds on flange/fold faces are not yet supported', {
+        description: 'Currently, fold lines can only be drawn on the base face (top or bottom).',
+      });
+      return;
+    }
+
     // Validate fold qualification immediately
     if (profileBounds) {
       const sketchLine = faceSketches
