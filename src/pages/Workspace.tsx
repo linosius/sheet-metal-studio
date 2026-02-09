@@ -32,6 +32,7 @@ export default function Workspace() {
 
   // 3D state
   const [profile, setProfile] = useState<Point2D[] | null>(null);
+  const [cutouts, setCutouts] = useState<{ center: Point2D; radius: number }[]>([]);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
 
   // Action history (replaces individual flanges/folds/faceSketches state)
@@ -62,7 +63,13 @@ export default function Workspace() {
       });
       return;
     }
+    // Extract circles as cutouts
+    const circles = sketch.entities
+      .filter(e => e.type === 'circle')
+      .map(e => e.type === 'circle' ? { center: e.center, radius: e.radius } : null)
+      .filter(Boolean) as { center: Point2D; radius: number }[];
     setProfile(p);
+    setCutouts(circles);
     history.pushAction('Base Face Created', 'base-face', { flanges: [], folds: [], faceSketches: [] });
     setSelectedEdgeId(null);
     setSelectedSketchLineId(null);
@@ -71,7 +78,7 @@ export default function Workspace() {
     setSketchSelectedIds([]);
     setCurrentStep('fold-flanges');
     toast.success('Base face created', {
-      description: `Profile with ${p.length} vertices, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
+      description: `Profile with ${p.length} vertices${circles.length > 0 ? `, ${circles.length} cutout(s)` : ''}, thickness: ${sketch.sheetMetalDefaults.thickness}mm`,
     });
   }, [sketch.entities, sketch.sheetMetalDefaults.thickness, history]);
 
@@ -688,6 +695,7 @@ export default function Workspace() {
                 <Viewer3D
                   profile={profile}
                   thickness={sketch.sheetMetalDefaults.thickness}
+                  cutouts={cutouts}
                   selectedEdgeId={selectedEdgeId}
                   onEdgeClick={setSelectedEdgeId}
                   flanges={flanges}
