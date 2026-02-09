@@ -63,7 +63,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
       </mesh>
       {edgesGeo && (
         <lineSegments geometry={edgesGeo}>
@@ -126,7 +126,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
       </mesh>
       {/* Tip (flat faces) */}
       <mesh
@@ -135,7 +135,7 @@ function FoldMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
       </mesh>
       {/* Tip edge outlines — always visible, subtle in view mode */}
       {tipEdgesGeo && (
@@ -329,7 +329,7 @@ function SheetMetalMesh({
         onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
         onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
       >
-        <meshBasicMaterial color="#c8cdd2" side={THREE.DoubleSide} />
+        <meshBasicMaterial color="#a8adb2" side={THREE.DoubleSide} />
       </mesh>
 
       {/* Wireframe edges — always visible, subtle color in view mode */}
