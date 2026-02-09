@@ -79,39 +79,24 @@ export function computeFlatPattern(
 
   let bendIndex = 1;
 
-  // ---- Process folds: mirror moving polygon across fold line ----
+  // ---- Process folds: add bend lines only (no displaced regions) ----
+  // Folds bend existing material, so the flat pattern keeps the original
+  // base face dimensions. We only draw bend line annotations at the
+  // ORIGINAL drawn fold line position (not shifted by foldLocation offset).
   for (const fold of folds) {
     const normal = getFoldNormal(fold, faceWidth, faceHeight);
-
-    // Shift from drawn fold line to inner edge
-    const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
-    const foldStart = { x: profMinX + fold.lineStart.x - normal.x * off, y: profMinY + fold.lineStart.y - normal.y * off };
-    const foldEnd = { x: profMinX + fold.lineEnd.x - normal.x * off, y: profMinY + fold.lineEnd.y - normal.y * off };
-
-    // Get moving polygon (side where dot >= 0, i.e. the normal/moving side)
-    const negNormal = { x: -normal.x, y: -normal.y };
-    const movingPoly = clipPolygonByLine([...profile], foldStart, negNormal);
-
-    if (movingPoly.length < 3) continue;
-
     const BA = bendAllowance(fold.bendRadius, kFactor, thickness, fold.angle);
 
-    // Shift the moving polygon outward by BA in the normal direction.
-    // This preserves the original base face dimensions and places the
-    // unfolded region on the moving side with a BA-sized gap.
-    const unfoldedPoly = movingPoly.map(v => ({
-      x: v.x + normal.x * BA,
-      y: v.y + normal.y * BA,
-    }));
+    // Use the original drawn fold line position (no foldLocation offset)
+    const foldStart = { x: profMinX + fold.lineStart.x, y: profMinY + fold.lineStart.y };
+    const foldEnd = { x: profMinX + fold.lineEnd.x, y: profMinY + fold.lineEnd.y };
 
-    regions.push({ id: `fold_${fold.id}`, type: 'flange', polygon: unfoldedPoly });
-
-    // Bend lines at the inner edge position
+    // First bend line at the fold line position
     bendLines.push({
       start: { ...foldStart }, end: { ...foldEnd },
       angle: fold.angle, radius: fold.bendRadius, label: `F${bendIndex}`,
     });
-    // Second bend line offset by BA in +normal direction (on the moving/unfolded side)
+    // Second bend line offset by BA in +normal direction (marks bend zone width)
     bendLines.push({
       start: { x: foldStart.x + normal.x * BA, y: foldStart.y + normal.y * BA },
       end: { x: foldEnd.x + normal.x * BA, y: foldEnd.y + normal.y * BA },
