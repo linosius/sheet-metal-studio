@@ -93,7 +93,29 @@ export interface SketchRect {
   height: number;
 }
 
-export type SketchEntity = SketchLine | SketchRect;
+export interface SketchCircle {
+  id: string;
+  type: 'circle';
+  center: Point2D;
+  radius: number;
+}
+
+export interface SketchArc {
+  id: string;
+  type: 'arc';
+  center: Point2D;
+  radius: number;
+  startAngle: number;
+  endAngle: number;
+}
+
+export interface SketchPoint {
+  id: string;
+  type: 'point';
+  position: Point2D;
+}
+
+export type SketchEntity = SketchLine | SketchRect | SketchCircle | SketchArc | SketchPoint;
 
 /**
  * Snap a point to the nearest grid intersection.

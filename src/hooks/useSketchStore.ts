@@ -3,13 +3,14 @@ import {
   SketchEntity,
   SketchLine,
   SketchRect,
+  SketchCircle,
   Point2D,
   SheetMetalDefaults,
   DEFAULT_SHEET_METAL,
   generateId,
 } from '@/lib/sheetmetal';
 
-export type SketchTool = 'select' | 'line' | 'rect';
+export type SketchTool = 'select' | 'line' | 'rect' | 'circle' | 'arc' | 'point';
 
 export interface SketchState {
   entities: SketchEntity[];
@@ -51,6 +52,17 @@ export function useSketchStore() {
     return rect;
   }, []);
 
+  const addCircle = useCallback((center: Point2D, radius: number) => {
+    const circle: SketchCircle = {
+      id: generateId(),
+      type: 'circle',
+      center,
+      radius,
+    };
+    setEntities(prev => [...prev, circle]);
+    return circle;
+  }, []);
+
   const removeEntity = useCallback((id: string) => {
     setEntities(prev => prev.filter(e => e.id !== id));
     setSelectedIds(prev => prev.filter(sid => sid !== id));
@@ -87,6 +99,7 @@ export function useSketchStore() {
     setSheetMetalDefaults,
     addLine,
     addRect,
+    addCircle,
     removeEntity,
     removeEntities,
     clearAll,
