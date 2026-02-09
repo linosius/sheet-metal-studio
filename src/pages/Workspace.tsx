@@ -157,7 +157,7 @@ export default function Workspace() {
 
       const foldEdge = computeFoldEdge(profile, sketch.sheetMetalDefaults.thickness, fold);
       const lineLen = foldEdge.start.distanceTo(foldEdge.end);
-      const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
+      const { startHeight, endHeight } = getFoldMovingHeights(profile, fold, sketch.sheetMetalDefaults.thickness);
 
       return {
         origin: { x: 0, y: 0 } as Point2D,

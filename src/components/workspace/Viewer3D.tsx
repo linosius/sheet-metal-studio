@@ -255,7 +255,7 @@ function SheetMetalMesh({
   faceSketches, selectedSketchLineId, onSketchLineClick,
   activeSketchFaceId,
 }: SheetMetalMeshProps) {
-  const fixedProfile = useMemo(() => getFixedProfile(profile, folds), [profile, folds]);
+  const fixedProfile = useMemo(() => getFixedProfile(profile, folds, thickness), [profile, folds, thickness]);
   const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness), [fixedProfile, thickness]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
@@ -460,9 +460,19 @@ function SheetMetalMesh({
 
         if (parentFold) {
           const parentEdge = computeFoldEdge(profile, thickness, parentFold);
-          const pivot = parentEdge.start;
           const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-          const angleRad = (parentFold.direction === 'up' ? -1 : 1) * (parentFold.angle * Math.PI / 180);
+          const R = parentFold.bendRadius;
+
+          // Center of curvature = inner edge + R along face normal direction
+          // Matches the arc formula in createFoldMesh where center is at O + R*W3
+          const pivot = parentEdge.start.clone().add(
+            parentEdge.faceNormal.clone().multiplyScalar(R)
+          );
+
+          // Angle sign from triple product: ensures rotation direction matches arc parameterization
+          const crossUW = new THREE.Vector3().crossVectors(parentEdge.normal, parentEdge.faceNormal);
+          const signFactor = Math.sign(crossUW.dot(axis));
+          const angleRad = signFactor * (parentFold.angle * Math.PI / 180);
           const quat = new THREE.Quaternion().setFromAxisAngle(axis, angleRad);
 
           return (

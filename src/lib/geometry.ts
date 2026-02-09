@@ -383,7 +383,7 @@ export function getAllSelectableEdges(
   flanges: Flange[],
   folds: Fold[] = []
 ): PartEdge[] {
-  const fixedProfile = getFixedProfile(profile, folds);
+  const fixedProfile = getFixedProfile(profile, folds, thickness);
   const baseEdges = extractEdges(fixedProfile, thickness);
   const edgeMap = new Map<string, PartEdge>();
   baseEdges.forEach(e => edgeMap.set(e.id, e));
@@ -391,7 +391,7 @@ export function getAllSelectableEdges(
   // Process folds to add their tip/side edges (edges on folded faces)
   for (const fold of folds) {
     const foldEdge = computeFoldEdge(profile, thickness, fold);
-    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold);
+    const { startHeight, endHeight } = getFoldMovingHeights(profile, fold, thickness);
     const tipEdges = computeFoldTipEdges(
       foldEdge, fold.angle, fold.direction ?? 'up', fold.bendRadius,
       thickness, startHeight, endHeight, fold.id
@@ -545,6 +545,25 @@ export interface Fold {
   sketchLineId?: string;
   faceId?: string;
   foldLocation?: 'centerline' | 'material-inside' | 'material-outside';
+}
+
+/**
+ * Compute the distance from the drawn fold line to the physical inner edge of the bend,
+ * based on the foldLocation setting:
+ * - 'material-inside': 0 (drawn line = inner edge)
+ * - 'centerline': thickness / 2
+ * - 'material-outside': thickness
+ */
+export function foldLineToInnerEdgeOffset(
+  foldLocation: Fold['foldLocation'],
+  thickness: number,
+): number {
+  switch (foldLocation) {
+    case 'material-inside': return 0;
+    case 'material-outside': return thickness;
+    case 'centerline':
+    default: return thickness / 2;
+  }
 }
 
 export interface FaceSketchLine {
@@ -786,11 +805,21 @@ export function computeFoldEdge(
     ? new THREE.Vector3(0, 0, 1)
     : new THREE.Vector3(0, 0, -1);
 
-  const start3d = new THREE.Vector3(minX + fold.lineStart.x, minY + fold.lineStart.y, z);
-  const end3d = new THREE.Vector3(minX + fold.lineEnd.x, minY + fold.lineEnd.y, z);
-
   const normal2d = getFoldNormal(fold, faceWidth, faceHeight);
   const outwardNormal = new THREE.Vector3(normal2d.x, normal2d.y, 0);
+
+  // Shift from drawn fold line to physical inner edge of bend
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const start3d = new THREE.Vector3(
+    minX + fold.lineStart.x - normal2d.x * off,
+    minY + fold.lineStart.y - normal2d.y * off,
+    z,
+  );
+  const end3d = new THREE.Vector3(
+    minX + fold.lineEnd.x - normal2d.x * off,
+    minY + fold.lineEnd.y - normal2d.y * off,
+    z,
+  );
 
   return {
     id: `fold_edge_${fold.id}`,
@@ -806,7 +835,7 @@ export function computeFoldEdge(
  * Get the fixed (remaining) profile after applying folds.
  * Uses Sutherland-Hodgman polygon clipping against each fold line.
  */
-export function getFixedProfile(profile: Point2D[], folds: Fold[]): Point2D[] {
+export function getFixedProfile(profile: Point2D[], folds: Fold[], thickness: number = 0): Point2D[] {
   if (folds.length === 0) return profile;
 
   const xs = profile.map(p => p.x);
@@ -819,8 +848,13 @@ export function getFixedProfile(profile: Point2D[], folds: Fold[]): Point2D[] {
   let clipped = [...profile];
 
   for (const fold of folds) {
-    const linePoint: Point2D = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
     const normal = getFoldNormal(fold, faceWidth, faceHeight);
+    // Shift clip point from drawn fold line to inner edge (toward fixed side)
+    const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+    const linePoint: Point2D = {
+      x: minX + fold.lineStart.x - normal.x * off,
+      y: minY + fold.lineStart.y - normal.y * off,
+    };
     clipped = clipPolygonByLine(clipped, linePoint, normal);
   }
 
@@ -833,7 +867,8 @@ export function getFixedProfile(profile: Point2D[], folds: Fold[]): Point2D[] {
  */
 export function getFoldMovingHeights(
   profile: Point2D[],
-  fold: Fold
+  fold: Fold,
+  thickness: number = 0,
 ): { startHeight: number; endHeight: number } {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
@@ -843,7 +878,12 @@ export function getFoldMovingHeights(
   const faceHeight = Math.max(...ys) - minY;
 
   const normal = getFoldNormal(fold, faceWidth, faceHeight);
-  const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
+  // Shift reference to inner edge
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const fs = {
+    x: minX + fold.lineStart.x - normal.x * off,
+    y: minY + fold.lineStart.y - normal.y * off,
+  };
 
   // Get moving polygon (side opposite to fixed = where dot > 0)
   const negNormal = { x: -normal.x, y: -normal.y };
@@ -949,15 +989,18 @@ export function createFoldMesh(
   const faceW = Math.max(...xs) - minX;
   const faceH = Math.max(...ys) - minY;
 
-  const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
-  const fe = { x: minX + fold.lineEnd.x, y: minY + fold.lineEnd.y };
+  const norm = getFoldNormal(fold, faceW, faceH);
+
+  // Shift from drawn fold line to inner edge
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const fs = { x: minX + fold.lineStart.x - norm.x * off, y: minY + fold.lineStart.y - norm.y * off };
+  const fe = { x: minX + fold.lineEnd.x - norm.x * off, y: minY + fold.lineEnd.y - norm.y * off };
   const edx = fe.x - fs.x;
   const edy = fe.y - fs.y;
   const eLen = Math.hypot(edx, edy);
   if (eLen < 0.01) return null;
 
   const tang = { x: edx / eLen, y: edy / eLen };
-  const norm = getFoldNormal(fold, faceW, faceH);
 
   const negN = { x: -norm.x, y: -norm.y };
   let movPoly = clipPolygonByLine([...profile], fs, negN);
@@ -966,7 +1009,8 @@ export function createFoldMesh(
   const myArea = polygonArea(movPoly);
   for (const other of otherFolds) {
     const otherNorm = getFoldNormal(other, faceW, faceH);
-    const otherFs = { x: minX + other.lineStart.x, y: minY + other.lineStart.y };
+    const otherOff = foldLineToInnerEdgeOffset(other.foldLocation, thickness);
+    const otherFs = { x: minX + other.lineStart.x - otherNorm.x * otherOff, y: minY + other.lineStart.y - otherNorm.y * otherOff };
     const otherNegN = { x: -otherNorm.x, y: -otherNorm.y };
     const otherMov = clipPolygonByLine([...profile], otherFs, otherNegN);
     const otherArea = polygonArea(otherMov);
@@ -1186,15 +1230,18 @@ export function computeFoldBendLines(
   const faceW = Math.max(...xs) - minX;
   const faceH = Math.max(...ys) - minY;
 
-  const fs = { x: minX + fold.lineStart.x, y: minY + fold.lineStart.y };
-  const fe = { x: minX + fold.lineEnd.x, y: minY + fold.lineEnd.y };
+  const norm = getFoldNormal(fold, faceW, faceH);
+
+  // Shift from drawn fold line to inner edge
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const fs = { x: minX + fold.lineStart.x - norm.x * off, y: minY + fold.lineStart.y - norm.y * off };
+  const fe = { x: minX + fold.lineEnd.x - norm.x * off, y: minY + fold.lineEnd.y - norm.y * off };
   const edx = fe.x - fs.x;
   const edy = fe.y - fs.y;
   const eLen = Math.hypot(edx, edy);
   if (eLen < 0.01) return { bendStart: [], bendEnd: [] };
 
   const tang = { x: edx / eLen, y: edy / eLen };
-  const norm = getFoldNormal(fold, faceW, faceH);
 
   const negN = { x: -norm.x, y: -norm.y };
   const movPoly = clipPolygonByLine([...profile], fs, negN);
