@@ -65,9 +65,9 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
       >
         <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
-      {edgesGeo && (
+      {showLines && edgesGeo && (
         <lineSegments geometry={edgesGeo}>
-          <lineBasicMaterial color={showLines ? "#475569" : "#8a9099"} linewidth={1} />
+          <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
       {showLines && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
@@ -137,10 +137,10 @@ function FoldMesh({
       >
         <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
-      {/* Tip edge outlines — always visible, subtle in view mode */}
-      {tipEdgesGeo && (
+      {/* Tip edge outlines — only in non-view mode */}
+      {showLines && tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
-          <lineBasicMaterial color={showLines ? "#475569" : "#8a9099"} linewidth={1} />
+          <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
       {/* Bend zone tangent lines */}
@@ -332,10 +332,12 @@ function SheetMetalMesh({
         <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
 
-      {/* Wireframe edges — always visible, subtle color in view mode */}
-      <lineSegments geometry={edgesGeometry}>
-        <lineBasicMaterial color={isViewMode ? "#8a9099" : "#475569"} linewidth={1} />
-      </lineSegments>
+      {/* Wireframe edges — hidden in view mode */}
+      {!isViewMode && (
+        <lineSegments geometry={edgesGeometry}>
+          <lineBasicMaterial color="#475569" linewidth={1} />
+        </lineSegments>
+      )}
 
       {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
       {edges.map((edge) => {
