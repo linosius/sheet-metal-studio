@@ -1676,7 +1676,7 @@ export function computeFoldFaceTransform(
   const normal = foldEdge.normal.clone();
   const dSign = fold.direction === 'up' ? 1 : -1;
   const angleRad = fold.angle * Math.PI / 180;
-  const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
+  const q = new THREE.Quaternion().setFromAxisAngle(tangent, dSign * angleRad);
   const bentNormal = normal.clone().applyQuaternion(q);
   const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
 
