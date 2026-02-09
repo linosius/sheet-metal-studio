@@ -332,8 +332,8 @@ function SheetMetalMesh({
         <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
 
-      {/* Wireframe edges — hidden in view mode */}
-      {!isViewMode && (
+      {/* Wireframe edges — only in sketch/fold mode, hidden in view and edge mode */}
+      {!isViewMode && !isEdgeMode && (
         <lineSegments geometry={edgesGeometry}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
