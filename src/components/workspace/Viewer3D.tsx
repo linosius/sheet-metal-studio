@@ -41,36 +41,9 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
 }) {
   const isActiveSketch = activeSketchFaceId === `flange_face_${flange.id}`;
   const [hovered, setHovered] = useState(false);
-  // Compute clip heights from child folds on this flange face
-  const { clipHS, clipHE } = useMemo(() => {
-    if (!childFolds?.length) return { clipHS: undefined, clipHE: undefined };
-    const edgeLen = edge.start.distanceTo(edge.end);
-    let hs = flange.height, he = flange.height;
-    for (const child of childFolds) {
-      const childNorm = getFoldNormal(child, edgeLen, flange.height);
-      // Check if flange base (y=0) is on the fixed side (opposite to normal)
-      const foldMidY = (child.lineStart.y + child.lineEnd.y) / 2;
-      if (foldMidY * childNorm.y < 0) continue; // Normal points toward y=0, skip
-      // Interpolate fold line y at x=0 and x=edgeLen
-      const dx = child.lineEnd.x - child.lineStart.x;
-      if (Math.abs(dx) < 0.01) continue;
-      const slope = (child.lineEnd.y - child.lineStart.y) / dx;
-      // Only clip at boundaries the fold line actually reaches
-      const TOL = 1;
-      const reachesLeft = child.lineStart.x < TOL || child.lineEnd.x < TOL;
-      const reachesRight = child.lineStart.x > edgeLen - TOL || child.lineEnd.x > edgeLen - TOL;
-      const y0 = reachesLeft
-        ? Math.max(0, Math.min(flange.height, child.lineStart.y + slope * -child.lineStart.x))
-        : flange.height;
-      const yE = reachesRight
-        ? Math.max(0, Math.min(flange.height, child.lineStart.y + slope * (edgeLen - child.lineStart.x)))
-        : flange.height;
-      hs = Math.min(hs, y0);
-      he = Math.min(he, yE);
-    }
-    return { clipHS: hs, clipHE: he };
-  }, [childFolds, edge, flange]);
-  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness, clipHS, clipHE), [edge, flange, thickness, clipHS, clipHE]);
+  // Note: flange face clipping for sub-folds is intentionally disabled.
+  // The sub-fold mesh bends the moving region away, so the overlap is minimal.
+  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
   const edgesGeo = useMemo(() => {
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
       return null;
