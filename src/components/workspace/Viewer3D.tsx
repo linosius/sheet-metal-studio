@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect } from 'react';
+import { useMemo, useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
@@ -34,6 +34,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
   isSketchMode?: boolean; onFaceClick?: (faceId: string) => void;
   showLines?: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
   const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
   const edgesGeo = useMemo(() => {
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
@@ -54,16 +55,31 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
     <group>
       <mesh
         geometry={geometry}
+        userData={{ faceId: flangeFaceId }}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
             e.stopPropagation();
             onFaceClick(flangeFaceId);
           }
         }}
-        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+        onPointerOver={(e) => {
+          if (isSketchMode) {
+            e.stopPropagation();
+            document.body.style.cursor = 'pointer';
+            setHovered(true);
+          }
+        }}
+        onPointerOut={() => {
+          if (isSketchMode) {
+            document.body.style.cursor = 'default';
+            setHovered(false);
+          }
+        }}
       >
-        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+        <meshStandardMaterial
+          color={isSketchMode && hovered ? '#93c5fd' : '#bcc2c8'}
+          metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
+        />
       </mesh>
       {showLines && edgesGeo && (
         <lineSegments geometry={edgesGeo}>
@@ -87,6 +103,7 @@ function FoldMesh({
   onFaceClick?: (faceId: string) => void;
   showLines?: boolean;
 }) {
+  const [hovered, setHovered] = useState(false);
   const result = useMemo(
     () => createFoldMesh(profile, fold, otherFolds, thickness),
     [profile, fold, otherFolds, thickness],
@@ -117,33 +134,50 @@ function FoldMesh({
     }
   };
 
+  const handlePointerOver = (e: any) => {
+    if (isSketchMode) {
+      e.stopPropagation();
+      document.body.style.cursor = 'pointer';
+      setHovered(true);
+    }
+  };
+
+  const handlePointerOut = () => {
+    if (isSketchMode) {
+      document.body.style.cursor = 'default';
+      setHovered(false);
+    }
+  };
+
+  const matColor = isSketchMode && hovered ? '#93c5fd' : '#bcc2c8';
+
   return (
     <group>
-      {/* Arc (bend zone) — smooth shading for cylindrical appearance */}
+      {/* Arc (bend zone) */}
       <mesh
         geometry={result.arc}
+        userData={{ faceId: foldFaceId }}
         onClick={handleClick}
-        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
       >
-        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={matColor} metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
       {/* Tip (flat faces) */}
       <mesh
         geometry={result.tip}
+        userData={{ faceId: foldFaceId }}
         onClick={handleClick}
-        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
       >
-        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+        <meshStandardMaterial color={matColor} metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
       </mesh>
-      {/* Tip edge outlines — only in non-view mode */}
       {showLines && tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
-      {/* Bend zone tangent lines */}
       {showLines && bendLines.start.length > 0 && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
       {showLines && bendLines.end.length > 0 && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
     </group>
@@ -338,6 +372,8 @@ function SheetMetalMesh({
     return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
   }, [profile]);
 
+  const [baseFaceHovered, setBaseFaceHovered] = useState(false);
+
   const isSketchMode = interactionMode === 'sketch';
   const isFoldMode = interactionMode === 'fold';
   const isEdgeMode = interactionMode === 'edge';
@@ -348,16 +384,36 @@ function SheetMetalMesh({
       {/* Solid base face */}
       <mesh
         geometry={geometry}
+        userData={{ faceType: 'base' }}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
+            // Skip if a fold/flange face was hit closer
+            const closest = e.intersections[0];
+            if (closest && closest.object.userData?.faceId) return;
             e.stopPropagation();
             onFaceClick(e.point.z > thickness * 0.5 ? 'base_top' : 'base_bot');
           }
         }}
-        onPointerOver={() => { if (isSketchMode) document.body.style.cursor = 'pointer'; }}
-        onPointerOut={() => { if (isSketchMode) document.body.style.cursor = 'default'; }}
+        onPointerOver={(e) => {
+          if (isSketchMode) {
+            // Don't highlight if a fold/flange face is closer
+            const closest = e.intersections[0];
+            if (closest && closest.object.userData?.faceId) return;
+            document.body.style.cursor = 'pointer';
+            setBaseFaceHovered(true);
+          }
+        }}
+        onPointerOut={() => {
+          if (isSketchMode) {
+            document.body.style.cursor = 'default';
+            setBaseFaceHovered(false);
+          }
+        }}
       >
-        <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+        <meshStandardMaterial
+          color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#bcc2c8'}
+          metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
+        />
       </mesh>
 
       {/* Wireframe edges — only in sketch/fold mode, hidden in view and edge mode */}
