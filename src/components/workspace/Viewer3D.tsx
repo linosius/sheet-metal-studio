@@ -404,7 +404,7 @@ function SheetMetalMesh({
               />
             )}
 
-            {isEdgeMode && (
+            {isEdgeMode && !isFoldLine && (
               <mesh
                 position={edgeMid}
                 quaternion={edgeQuat}
