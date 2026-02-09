@@ -5,10 +5,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { Button } from '@/components/ui/button';
 import { SheetMetalDefaults, MATERIALS } from '@/lib/sheetmetal';
-import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors, PenLine, Minus, Circle, Square, GitBranch } from 'lucide-react';
+import { Settings2, ArrowUpFromLine, ArrowDownFromLine, Trash2, Plus, Scissors, PenLine, Minus, Circle, Square } from 'lucide-react';
 import { PartEdge, Flange, Fold, FaceSketch, FaceSketchLine, getUserFacingDirection } from '@/lib/geometry';
-import { HistoryEntry } from '@/hooks/useActionHistory';
-import { ActionTree } from './ActionTree';
 
 interface PropertiesPanelProps {
   defaults: SheetMetalDefaults;
@@ -27,9 +25,6 @@ interface PropertiesPanelProps {
   subMode?: 'edge' | 'sketch' | 'fold';
   faceSketches?: FaceSketch[];
   selectedSketchLine?: FaceSketchLine | null;
-  actionEntries?: HistoryEntry[];
-  actionCurrentIndex?: number;
-  onActionGoTo?: (index: number) => void;
 }
 
 export function PropertiesPanel({
@@ -38,7 +33,6 @@ export function PropertiesPanel({
   flanges = [], onAddFlange, onUpdateFlange, onRemoveFlange,
   folds = [], onRemoveFold,
   subMode, faceSketches = [], selectedSketchLine,
-  actionEntries, actionCurrentIndex, onActionGoTo,
 }: PropertiesPanelProps) {
   const [flangeHeight, setFlangeHeight] = useState(20);
   const [flangeAngle, setFlangeAngle] = useState(90);
@@ -410,23 +404,6 @@ export function PropertiesPanel({
                   </Button>
                 </div>
               ))}
-            </div>
-          </>
-        )}
-        {/* ── Action Tree ── */}
-        {actionEntries && actionEntries.length > 1 && onActionGoTo && (
-          <>
-            <Separator />
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
-                <p className="text-xs font-semibold">History ({actionEntries.length - 1})</p>
-              </div>
-              <ActionTree
-                entries={actionEntries}
-                currentIndex={actionCurrentIndex ?? 0}
-                onGoTo={onActionGoTo}
-              />
             </div>
           </>
         )}
