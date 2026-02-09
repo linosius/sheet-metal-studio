@@ -10,7 +10,7 @@ import {
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity,
   classifySketchLineAsFold, isEdgeOnFoldLine,
-  getFixedProfile, computeFoldEdge, getFoldParentId,
+  getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions,
 } from '@/lib/geometry';
@@ -33,14 +33,36 @@ interface SheetMetalMeshProps {
 
 const noopRaycast = () => {};
 
-function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLines = true, activeSketchFaceId }: {
+function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLines = true, activeSketchFaceId, childFolds }: {
   edge: PartEdge; flange: Flange; thickness: number;
   isSketchMode?: boolean; onFaceClick?: (faceId: string) => void;
   showLines?: boolean; activeSketchFaceId?: string | null;
+  childFolds?: Fold[];
 }) {
   const isActiveSketch = activeSketchFaceId === `flange_face_${flange.id}`;
   const [hovered, setHovered] = useState(false);
-  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness), [edge, flange, thickness]);
+  // Compute clip heights from child folds on this flange face
+  const { clipHS, clipHE } = useMemo(() => {
+    if (!childFolds?.length) return { clipHS: undefined, clipHE: undefined };
+    const edgeLen = edge.start.distanceTo(edge.end);
+    let hs = flange.height, he = flange.height;
+    for (const child of childFolds) {
+      const childNorm = getFoldNormal(child, edgeLen, flange.height);
+      // Check if flange base (y=0) is on the fixed side (opposite to normal)
+      const foldMidY = (child.lineStart.y + child.lineEnd.y) / 2;
+      if (foldMidY * childNorm.y < 0) continue; // Normal points toward y=0, skip
+      // Interpolate fold line y at x=0 and x=edgeLen
+      const dx = child.lineEnd.x - child.lineStart.x;
+      if (Math.abs(dx) < 0.01) continue;
+      const slope = (child.lineEnd.y - child.lineStart.y) / dx;
+      const y0 = child.lineStart.y + slope * -child.lineStart.x;
+      const yE = child.lineStart.y + slope * (edgeLen - child.lineStart.x);
+      hs = Math.min(hs, Math.max(0, Math.min(flange.height, y0)));
+      he = Math.min(he, Math.max(0, Math.min(flange.height, yE)));
+    }
+    return { clipHS: hs, clipHE: he };
+  }, [childFolds, edge, flange]);
+  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness, clipHS, clipHE), [edge, flange, thickness, clipHS, clipHE]);
   const edgesGeo = useMemo(() => {
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
       return null;
@@ -100,6 +122,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, onFaceClick, showLi
 
 function FoldMesh({
   profile, fold, otherFolds, thickness, isSketchMode, onFaceClick, showLines = true, activeSketchFaceId,
+  childFolds,
 }: {
   profile: Point2D[];
   fold: Fold;
@@ -109,12 +132,13 @@ function FoldMesh({
   onFaceClick?: (faceId: string) => void;
   showLines?: boolean;
   activeSketchFaceId?: string | null;
+  childFolds?: Fold[];
 }) {
   const isActiveSketch = activeSketchFaceId === `fold_face_${fold.id}`;
   const [hovered, setHovered] = useState(false);
   const result = useMemo(
-    () => createFoldMesh(profile, fold, otherFolds, thickness),
-    [profile, fold, otherFolds, thickness],
+    () => createFoldMesh(profile, fold, otherFolds, thickness, childFolds),
+    [profile, fold, otherFolds, thickness, childFolds],
   );
 
   const tipEdgesGeo = useMemo(() => {
@@ -692,6 +716,7 @@ function SheetMetalMesh({
       {flanges.map((flange) => {
         const edge = edgeMap.get(flange.edgeId);
         if (!edge) return null;
+        const flangeChildFolds = nonBaseFolds.filter(f => f.faceId === `flange_face_${flange.id}`);
         return (
           <FlangeMesh
             key={flange.id}
@@ -702,6 +727,7 @@ function SheetMetalMesh({
             onFaceClick={onFaceClick}
             showLines={!isViewMode && !isEdgeMode}
             activeSketchFaceId={activeSketchFaceId}
+            childFolds={flangeChildFolds.length > 0 ? flangeChildFolds : undefined}
           />
         );
       })}
@@ -710,6 +736,7 @@ function SheetMetalMesh({
       {baseFolds.map((fold, i) => {
         const parentId = getFoldParentId(fold, folds, profile);
         const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
+        const foldChildFolds = nonBaseFolds.filter(f => f.faceId === `fold_face_${fold.id}`);
 
         const mesh = (
           <FoldMesh
@@ -721,6 +748,7 @@ function SheetMetalMesh({
             onFaceClick={onFaceClick}
             showLines={!isViewMode && !isEdgeMode}
             activeSketchFaceId={activeSketchFaceId}
+            childFolds={foldChildFolds.length > 0 ? foldChildFolds : undefined}
           />
         );
 

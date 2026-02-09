@@ -427,12 +427,16 @@ export function getAllSelectableEdges(
 export function createFlangeMesh(
   edge: PartEdge,
   flange: Flange,
-  thickness: number
+  thickness: number,
+  clipHeightStart?: number,
+  clipHeightEnd?: number,
 ): THREE.BufferGeometry {
   const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
   const R = flange.bendRadius;
   const H = flange.height;
+  const HS = clipHeightStart ?? H;
+  const HE = clipHeightEnd ?? H;
 
   const uDir = edge.normal.clone().normalize();           // outward from face
   const wDir = edge.faceNormal.clone().multiplyScalar(dirSign); // perpendicular to face
@@ -444,53 +448,49 @@ export function createFlangeMesh(
   // ---------- Build 2D cross-section profile (u, w) ----------
   // Each entry stores inner & outer positions in (u,w) space relative to the edge point.
   interface CrossSection { iu: number; iw: number; ou: number; ow: number }
-  const profile: CrossSection[] = [];
+  const arcProfile: CrossSection[] = [];
 
-  // 1. Bend arc
+  // 1. Bend arc (same at both edge ends)
   for (let i = 0; i <= BEND_SEGMENTS; i++) {
     const t = (i / BEND_SEGMENTS) * bendAngleRad;
     const sinT = Math.sin(t);
     const cosT = Math.cos(t);
-    // Inner surface traces radius R around center (0, R)
     const iu = R * sinT;
     const iw = R * (1 - cosT) + W_EPSILON;
-    // Outer surface is offset by thickness radially outward from center
     const ou = iu + thickness * sinT;
     const ow = iw - thickness * cosT;
-    profile.push({ iu, iw, ou, ow });
+    arcProfile.push({ iu, iw, ou, ow });
   }
 
-  // 2. Flat flange after the arc
+  // 2. Flat flange tip — varies at start vs end for sub-fold clipping
   const arcEndT = bendAngleRad;
   const sinA = Math.sin(arcEndT);
   const cosA = Math.cos(arcEndT);
   const arcEndIU = R * sinA;
   const arcEndIW = R * (1 - cosA);
-  // Tangent direction at end of arc
   const tanU = cosA;
   const tanW = sinA;
-  // Perpendicular (thickness offset direction) = radial outward at end
   const perpU = sinA;
   const perpW = -cosA;
 
-  profile.push({
-    iu: arcEndIU + H * tanU,
-    iw: arcEndIW + H * tanW + W_EPSILON,
-    ou: arcEndIU + H * tanU + thickness * perpU,
-    ow: arcEndIW + H * tanW + thickness * perpW + W_EPSILON,
-  });
+  function tipCS(h: number): CrossSection {
+    return {
+      iu: arcEndIU + h * tanU,
+      iw: arcEndIW + h * tanW + W_EPSILON,
+      ou: arcEndIU + h * tanU + thickness * perpU,
+      ow: arcEndIW + h * tanW + thickness * perpW + W_EPSILON,
+    };
+  }
+  const tipStart = tipCS(HS);
+  const tipEnd = tipCS(HE);
 
   // ---------- Convert to 3D vertices ----------
-  // For each profile point: 4 vertices (innerStart, innerEnd, outerStart, outerEnd)
   const verts: number[] = [];
-  for (const p of profile) {
-    // Inner at edge start
+  // Arc vertices (same at both edge ends)
+  for (const p of arcProfile) {
     const is = edge.start.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
-    // Inner at edge end
     const ie = edge.end.clone().add(uDir.clone().multiplyScalar(p.iu)).add(wDir.clone().multiplyScalar(p.iw));
-    // Outer at edge start
     const os = edge.start.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
-    // Outer at edge end
     const oe = edge.end.clone().add(uDir.clone().multiplyScalar(p.ou)).add(wDir.clone().multiplyScalar(p.ow));
     verts.push(
       is.x, is.y, is.z,   // idx i*4+0
@@ -499,10 +499,23 @@ export function createFlangeMesh(
       oe.x, oe.y, oe.z,   // idx i*4+3
     );
   }
+  // Tip vertices (variable height at start vs end)
+  {
+    const is = edge.start.clone().add(uDir.clone().multiplyScalar(tipStart.iu)).add(wDir.clone().multiplyScalar(tipStart.iw));
+    const ie = edge.end.clone().add(uDir.clone().multiplyScalar(tipEnd.iu)).add(wDir.clone().multiplyScalar(tipEnd.iw));
+    const os = edge.start.clone().add(uDir.clone().multiplyScalar(tipStart.ou)).add(wDir.clone().multiplyScalar(tipStart.ow));
+    const oe = edge.end.clone().add(uDir.clone().multiplyScalar(tipEnd.ou)).add(wDir.clone().multiplyScalar(tipEnd.ow));
+    verts.push(
+      is.x, is.y, is.z,
+      ie.x, ie.y, ie.z,
+      os.x, os.y, os.z,
+      oe.x, oe.y, oe.z,
+    );
+  }
 
   // ---------- Build index buffer ----------
   const indices: number[] = [];
-  const N = profile.length;
+  const N = arcProfile.length + 1;
   for (let i = 0; i < N - 1; i++) {
     const c = i * 4;
     const n = (i + 1) * 4;
@@ -983,6 +996,7 @@ export function createFoldMesh(
   fold: Fold,
   otherFolds: Fold[],
   thickness: number,
+  childFolds?: Fold[],
 ): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
@@ -1021,6 +1035,32 @@ export function createFoldMesh(
     }
   }
   if (movPoly.length < 3) return null;
+
+  // ── Clip by child folds (sub-folds on this fold's face) ──
+  if (childFolds && childFolds.length > 0) {
+    for (const child of childFolds) {
+      // Convert child fold line from fold-face-local to base face coords
+      const cls = {
+        x: fs.x + child.lineStart.x * tang.x + child.lineStart.y * norm.x,
+        y: fs.y + child.lineStart.x * tang.y + child.lineStart.y * norm.y,
+      };
+      const cle = {
+        x: fs.x + child.lineEnd.x * tang.x + child.lineEnd.y * norm.x,
+        y: fs.y + child.lineEnd.x * tang.y + child.lineEnd.y * norm.y,
+      };
+      const cdx = cle.x - cls.x;
+      const cdy = cle.y - cls.y;
+      const clen = Math.hypot(cdx, cdy);
+      if (clen < 0.01) continue;
+      let cnx = cdy / clen;
+      let cny = -cdx / clen;
+      // Keep the side containing the fold edge (fs) — that's the "fixed" side
+      const dotFs = (fs.x - cls.x) * cnx + (fs.y - cls.y) * cny;
+      if (dotFs > 0) { cnx = -cnx; cny = -cny; }
+      movPoly = clipPolygonByLine(movPoly, cls, { x: cnx, y: cny });
+    }
+    if (movPoly.length < 3) return null;
+  }
 
   const dir = fold.direction ?? 'up';
   const z0 = dir === 'up' ? thickness : 0;
