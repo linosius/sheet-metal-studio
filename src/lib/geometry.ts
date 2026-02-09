@@ -1413,7 +1413,7 @@ export function createFoldMesh(
   }
   arcShape.closePath();
 
-  // Convert cutout polygons to (t, θ) space and add as holes
+  // Convert cutout polygons to (t, θ) space for arc hole detection
   const R_neutral = R + K_FACTOR * TH;
   const arcHoleLocs: Point2D[][] = [];
   if (movingCutouts && movingCutouts.length > 0) {
@@ -1428,77 +1428,125 @@ export function createFoldMesh(
       const maxTheta = Math.max(...cutTTheta.map(p => p.y));
       const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
       if (!hasArcPart) continue;
-      const EPS = 0.005;
+      // Clip to arc bounds
       let clippedArcCut = [...cutTTheta];
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: EPS }, { x: 0, y: -1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A - EPS }, { x: 0, y: 1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin + EPS, y: 0 }, { x: -1, y: 0 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax - EPS, y: 0 }, { x: 1, y: 0 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
       if (clippedArcCut.length < 3) continue;
-
-      // Ensure hole winding is CW (opposite of outer shape which is CCW)
-      const isHoleCW = THREE.ShapeUtils.isClockWise(clippedArcCut.map(p => new THREE.Vector2(p.x, p.y)));
-      if (!isHoleCW) {
-        clippedArcCut = clippedArcCut.slice().reverse();
-      }
-
-      const holePath = new THREE.Path();
-      holePath.moveTo(clippedArcCut[0].x, clippedArcCut[0].y);
-      for (let i = 1; i < clippedArcCut.length; i++) {
-        holePath.lineTo(clippedArcCut[i].x, clippedArcCut[i].y);
-      }
-      holePath.closePath();
-      arcShape.holes.push(holePath);
       arcHoleLocs.push(clippedArcCut);
     }
   }
 
-  // Triangulate the arc shape
-  const arcShapeGeo = new THREE.ShapeGeometry(arcShape);
-  const arcShapePos = arcShapeGeo.attributes.position;
-  const arcShapeIdx = arcShapeGeo.index;
+  // Point-in-polygon test (ray casting)
+  function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j].x, yj = poly[j].y;
+      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
 
-  // Inner surface — smooth normals from arc curvature
+  function isInsideAnyHole(t: number, theta: number): boolean {
+    for (const hole of arcHoleLocs) {
+      if (pointInPolygon(t, theta, hole)) return true;
+    }
+    return false;
+  }
+
+  // ── Build arc mesh via manual grid triangulation (avoids earcut hole issues) ──
+  const GRID_T = 40; // subdivisions along t
+  const GRID_THETA = ARC_N; // subdivisions along θ (same as arc steps)
+
+  // Build inner surface
   const innerArcBase = arcVi;
-  for (let i = 0; i < arcShapePos.count; i++) {
-    const t = arcShapePos.getX(i);
-    const theta = arcShapePos.getY(i);
-    const v = arcInner(t, theta);
-    const n = U3.clone().multiplyScalar(-Math.sin(theta))
-      .add(W3.clone().multiplyScalar(Math.cos(theta)));
-    addArcV(v, n);
-  }
-  if (arcShapeIdx) {
-    for (let i = 0; i < arcShapeIdx.count; i += 3) {
-      arcIdx.push(
-        innerArcBase + arcShapeIdx.getX(i),
-        innerArcBase + arcShapeIdx.getX(i + 1),
-        innerArcBase + arcShapeIdx.getX(i + 2),
-      );
+  // Pre-compute grid vertex indices (or -1 if inside a hole)
+  const innerVIdx: number[][] = [];
+  for (let it = 0; it <= GRID_T; it++) {
+    innerVIdx[it] = [];
+    for (let ia = 0; ia <= GRID_THETA; ia++) {
+      const theta = A * (ia / GRID_THETA);
+      const d_eq = BA_taper * (ia / GRID_THETA);
+      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
+      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
+      const t = tL + (tR - tL) * (it / GRID_T);
+
+      const v = arcInner(t, theta);
+      const n = U3.clone().multiplyScalar(-Math.sin(theta))
+        .add(W3.clone().multiplyScalar(Math.cos(theta)));
+      innerVIdx[it][ia] = addArcV(v, n);
     }
   }
 
-  // Outer surface — reversed winding, outward normals
-  const outerArcBase = arcVi;
-  for (let i = 0; i < arcShapePos.count; i++) {
-    const t = arcShapePos.getX(i);
-    const theta = arcShapePos.getY(i);
-    const v = arcOuter(t, theta);
-    const n = U3.clone().multiplyScalar(Math.sin(theta))
-      .add(W3.clone().multiplyScalar(-Math.cos(theta)));
-    addArcV(v, n);
-  }
-  if (arcShapeIdx) {
-    for (let i = 0; i < arcShapeIdx.count; i += 3) {
-      arcIdx.push(
-        outerArcBase + arcShapeIdx.getX(i),
-        outerArcBase + arcShapeIdx.getX(i + 2),
-        outerArcBase + arcShapeIdx.getX(i + 1),
-      );
+  // Build inner triangles, skipping cells where center is inside a cutout
+  for (let it = 0; it < GRID_T; it++) {
+    for (let ia = 0; ia < GRID_THETA; ia++) {
+      // Compute cell center in (t, θ) space
+      const theta0 = A * (ia / GRID_THETA);
+      const theta1 = A * ((ia + 1) / GRID_THETA);
+      const thetaC = (theta0 + theta1) / 2;
+      const d_eq0 = BA_taper * (ia / GRID_THETA);
+      const d_eq1 = BA_taper * ((ia + 1) / GRID_THETA);
+      const d_eqC = (d_eq0 + d_eq1) / 2;
+      const tLC = tMin + leftSlope * Math.min(d_eqC, leftAdjD);
+      const tRC = tMax + rightSlope * Math.min(d_eqC, rightAdjD);
+      const tC = tLC + (tRC - tLC) * ((it + 0.5) / GRID_T);
+
+      if (arcHoleLocs.length > 0 && isInsideAnyHole(tC, thetaC)) continue;
+
+      const v00 = innerVIdx[it][ia];
+      const v10 = innerVIdx[it + 1][ia];
+      const v01 = innerVIdx[it][ia + 1];
+      const v11 = innerVIdx[it + 1][ia + 1];
+      arcIdx.push(v00, v10, v11, v00, v11, v01);
     }
   }
 
-  arcShapeGeo.dispose();
+  // Build outer surface
+  const outerVIdx: number[][] = [];
+  for (let it = 0; it <= GRID_T; it++) {
+    outerVIdx[it] = [];
+    for (let ia = 0; ia <= GRID_THETA; ia++) {
+      const theta = A * (ia / GRID_THETA);
+      const d_eq = BA_taper * (ia / GRID_THETA);
+      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
+      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
+      const t = tL + (tR - tL) * (it / GRID_T);
+
+      const v = arcOuter(t, theta);
+      const n = U3.clone().multiplyScalar(Math.sin(theta))
+        .add(W3.clone().multiplyScalar(-Math.cos(theta)));
+      outerVIdx[it][ia] = addArcV(v, n);
+    }
+  }
+
+  // Build outer triangles (reversed winding), same hole skipping
+  for (let it = 0; it < GRID_T; it++) {
+    for (let ia = 0; ia < GRID_THETA; ia++) {
+      const theta0 = A * (ia / GRID_THETA);
+      const theta1 = A * ((ia + 1) / GRID_THETA);
+      const thetaC = (theta0 + theta1) / 2;
+      const d_eq0 = BA_taper * (ia / GRID_THETA);
+      const d_eq1 = BA_taper * ((ia + 1) / GRID_THETA);
+      const d_eqC = (d_eq0 + d_eq1) / 2;
+      const tLC = tMin + leftSlope * Math.min(d_eqC, leftAdjD);
+      const tRC = tMax + rightSlope * Math.min(d_eqC, rightAdjD);
+      const tC = tLC + (tRC - tLC) * ((it + 0.5) / GRID_T);
+
+      if (arcHoleLocs.length > 0 && isInsideAnyHole(tC, thetaC)) continue;
+
+      const v00 = outerVIdx[it][ia];
+      const v10 = outerVIdx[it + 1][ia];
+      const v01 = outerVIdx[it][ia + 1];
+      const v11 = outerVIdx[it + 1][ia + 1];
+      arcIdx.push(v00, v11, v10, v00, v01, v11);
+    }
+  }
 
   // Left side surface — connecting inner to outer along left boundary
   for (let i = 0; i < ARC_N; i++) {
