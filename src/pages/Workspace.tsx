@@ -488,6 +488,11 @@ export default function Workspace() {
         case 'l': sketch.setActiveTool('line'); break;
         case 'c': sketch.setActiveTool('circle'); break;
         case 'r': sketch.setActiveTool('rect'); break;
+        case 'a': sketch.setActiveTool('arc'); break;
+        case 'p': sketch.setActiveTool('point'); break;
+        case 'm': sketch.setActiveTool('move'); break;
+        case 't': sketch.setActiveTool('trim'); break;
+        case 'd': sketch.setActiveTool('dimension'); break;
       }
     };
     window.addEventListener('keydown', handler);
@@ -650,6 +655,10 @@ export default function Workspace() {
               onAddLine={sketch.addLine}
               onAddRect={sketch.addRect}
               onAddCircle={sketch.addCircle}
+              onAddArc={sketch.addArc}
+              onAddPoint={sketch.addPoint}
+              onUpdateEntity={sketch.updateEntity}
+              onAddEntities={sketch.addEntities}
               onSelectEntity={sketch.selectEntity}
               onDeselectAll={sketch.deselectAll}
               onRemoveEntities={sketch.removeEntities}
