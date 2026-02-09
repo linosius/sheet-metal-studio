@@ -1,114 +1,64 @@
 
+# Fix Unfold Flat Pattern and 3D Fold Rendering
 
-# Fix Child Fold Pivot, Angle Sign, and foldLocation Offsets
+## Problem Summary
 
-## Summary
+Two visual bugs when folding a diagonal line on a 200x100mm base face:
 
-Three bugs need fixing:
-1. **Child folds use the fold line as a hinge** instead of rotating around the center of curvature, causing nested folds to land in wrong positions
-2. **The rotation angle sign is hardcoded** using a simple up/down check that doesn't account for fold axis orientation
-3. **`foldLocation` is stored but never used** -- the property exists on every Fold but no geometry function reads it
+1. **Unfold shows wrong dimensions (204.4 x 105.x instead of 200x100)** -- A displaced green triangle is created as a separate region, extending beyond the original face. Inventor's flat pattern is simply the original rectangle with a dashed bend line.
 
-## What Will Change Visually
-
-- Nested folds (a fold inside another fold's moving region) will land at the correct arc-end position instead of hinging around the fold line
-- The `foldLocation` setting in the fold dialog (centerline / material-inside / material-outside) will actually affect geometry: shifting where the bend starts on the base face and adjusting the flat pattern accordingly
-- Single folds without nesting will look the same as before
+2. **3D bend looks unrealistic compared to Inventor** -- Visible gaps and shading inconsistencies at the fold junction due to Z-offsets and mismatched material settings.
 
 ---
 
-## Technical Details
+## What Changes Visually
 
-### Bug 1 and 2: Pivot and Angle Sign (Viewer3D.tsx, lines 461-466)
+- The unfold view will show the original 200x100mm rectangle with bend lines drawn ON it -- no extra displaced regions, no size change
+- The 3D fold will look seamless with the base face -- no visible gap or shading mismatch at the junction
 
-**Current code:**
-```typescript
-const pivot = parentEdge.start;  // fold line point -- acts as hinge
-const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-const angleRad = (parentFold.direction === 'up' ? -1 : 1) * (parentFold.angle * Math.PI / 180);
-```
+---
 
-**Fixed code:**
-```typescript
-const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-const R = parentFold.bendRadius;
+## Technical Changes
 
-// Center of curvature = inner edge + R along face normal direction
-// This matches the arc formula in createFoldMesh where the arc center is at O + R*W3
-const pivot = parentEdge.start.clone().add(
-  parentEdge.faceNormal.clone().multiplyScalar(R)
-);
+### File 1: `src/lib/unfold.ts` -- Fix flat pattern for folds
 
-// Angle sign from triple product: ensures rotation direction matches arc parameterization
-const crossUW = new THREE.Vector3().crossVectors(parentEdge.normal, parentEdge.faceNormal);
-const signFactor = Math.sign(crossUW.dot(axis));
-const angleRad = signFactor * (parentFold.angle * Math.PI / 180);
-```
+The fold processing loop (lines 82-121) currently:
+1. Clips the moving polygon from the profile
+2. Shifts it outward by Bend Allowance (BA)
+3. Adds it as a separate `flange`-type region
 
-The pivot matches the arc formula's center of curvature (`O + R * W3`), and the triple product sign ensures the rigid rotation reproduces the arc endpoint positions for any fold axis orientation.
+This is correct for edge flanges (adding new material) but wrong for folds (bending existing material).
 
-### Bug 3: foldLocation Offsets
+**Fix:** Remove the displaced region creation for folds entirely. Keep only the bend line annotations:
 
-A new helper function `foldLineToInnerEdgeOffset` converts the `foldLocation` setting into a physical distance:
-- `material-inside`: 0 (drawn line = inner edge, no shift)
-- `centerline`: thickness / 2
-- `material-outside`: thickness
+- Remove lines 91-107 (movingPoly clipping, BA shift, and `regions.push`)
+- Change bend line positions to use the ORIGINAL drawn fold line position (not shifted by foldLocation inner edge offset), since the flat pattern represents the original face
+- Keep two bend lines (marking the bend zone width = BA) to match Inventor's convention
+- The base region at line 52 already uses the full original profile -- this stays unchanged
+- Overall dimensions will be exactly the original face size (200 x 100)
 
-This offset shifts the clipping plane, arc origin, and edge position from the drawn fold line toward the fixed side (against the fold normal), so the bend zone starts at the correct physical location.
+### File 2: `src/lib/geometry.ts` -- Remove micro-gap in fold mesh
+
+In `createFoldMesh` (line 1036), `EPS = 0.01` adds a small Z-offset to all arc and tip vertices to prevent z-fighting with the base face. This creates a visible micro-gap between the base face surface and the fold arc start.
+
+**Fix:** Set `EPS = 0` (or remove it entirely). Z-fighting is not an issue here because the fold arc starts at the fold line boundary, not overlapping the base face surface.
+
+### File 3: `src/components/workspace/Viewer3D.tsx` -- Match material settings
+
+The fold tip mesh (line 136) uses `flatShading` while the base face (line 329) does not. This creates inconsistent lighting at the junction.
+
+**Fix:** Remove `flatShading` from the fold tip material to match the base face appearance. The smooth shading will make the transition between base face and fold look seamless, matching Inventor's rendering.
 
 ---
 
 ## Files Modified
 
-### 1. `src/lib/geometry.ts`
+1. `src/lib/unfold.ts` -- Remove displaced fold regions; keep only bend lines at original fold line positions
+2. `src/lib/geometry.ts` -- Remove EPS offset in createFoldMesh for seamless junction
+3. `src/components/workspace/Viewer3D.tsx` -- Remove flatShading from fold tip material
 
-**Add helper** (~line 548, after Fold interface):
-- `foldLineToInnerEdgeOffset(foldLocation, thickness)` -- returns the offset distance
+## Expected Result
 
-**Update `getFixedProfile`** (line 809):
-- Add `thickness` parameter (default 0)
-- Shift each fold's clip point by `foldLineToInnerEdgeOffset` in the `-normal` direction before clipping
-
-**Update `createFoldMesh`** (line 939):
-- Shift arc origin `O`, moving polygon clip point, and `toLocal` reference by the foldLocation offset
-
-**Update `computeFoldEdge`** (line 772):
-- Shift the 3D edge start/end by the foldLocation offset so `parentEdge.start` sits at the inner edge (needed for correct pivot calculation)
-
-**Update `computeFoldBendLines`** (line 1177):
-- Same offset shift for bend line positions
-
-**Update `getFoldMovingHeights`** (line 834):
-- Same offset shift for clip point and distance measurements
-
-**Update `getAllSelectableEdges`** (line 386):
-- Pass `thickness` to `getFixedProfile`
-
-### 2. `src/components/workspace/Viewer3D.tsx`
-
-**Fix pivot and angle sign** (lines 461-466):
-- Change pivot from `parentEdge.start` to `parentEdge.start + R * parentEdge.faceNormal`
-- Change angle sign from simple up/down check to triple-product formula
-
-**Update `getFixedProfile` call** (line 258):
-- Pass `thickness` as the new parameter
-
-### 3. `src/lib/unfold.ts`
-
-**Apply foldLocation offset to flat pattern** (lines 82-118):
-- Import `foldLineToInnerEdgeOffset` from geometry
-- Shift the clip point for each fold's moving polygon by the offset
-- Shift bend line positions to match the inner edge
-- BA shift direction (`+normal * BA`) remains unchanged
-
-### 4. `src/pages/Workspace.tsx`
-
-- No direct calls to `getFixedProfile` found in this file, so no changes needed here
-
-## Verification After Implementation
-
-1. Create a single 90-degree fold and verify it looks the same as before (offset = 0 for default centerline)
-2. Create a nested fold (fold inside another fold's region) and verify the child lands at the arc endpoint instead of hinging
-3. Toggle foldLocation between centerline / material-inside / material-outside and verify the bend start position shifts visibly
-4. Check the flat pattern updates correctly with foldLocation changes
-
+- Unfold shows exactly 200.0 x 100.0 mm with two dashed bend lines along the diagonal
+- 3D fold transitions seamlessly from base face to bend arc to folded flap
+- Matches Inventor behavior for both views
