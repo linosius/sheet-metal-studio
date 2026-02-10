@@ -173,9 +173,10 @@ export interface FoldLineInfoForBaseFace {
 }
 
 /**
- * Build base face geometry manually, with full control over sidewalls.
- * This eliminates the steg (material bridge) problem by never generating
- * hole sidewall quads near the fold line in blocked intervals.
+ * Build base face geometry using ExtrudeGeometry for top/bottom faces
+ * (which handles holes correctly), but replacing ALL sidewalls with
+ * manually constructed ones that respect fold-line blocked intervals.
+ * This eliminates the steg (material bridge) problem.
  */
 function buildBaseFaceManual(
   profile: Point2D[],
@@ -183,43 +184,37 @@ function buildBaseFaceManual(
   cutoutPolygons: Point2D[][],
   foldLineInfos: FoldLineInfoForBaseFace[],
 ): THREE.BufferGeometry {
-  const verts: number[] = [];
-  const indices: number[] = [];
+  // Step 1: Use ExtrudeGeometry for correct top/bottom face triangulation
+  const shape = profileToShape(profile);
+  if (cutoutPolygons && cutoutPolygons.length > 0) {
+    for (const poly of cutoutPolygons) {
+      if (poly.length < 3) continue;
+      const holePath = new THREE.Path();
+      holePath.moveTo(poly[0].x, poly[0].y);
+      for (let i = 1; i < poly.length; i++) holePath.lineTo(poly[i].x, poly[i].y);
+      holePath.closePath();
+      shape.holes.push(holePath);
+    }
+  }
+  const extruded = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
+  const nonIdx = extruded.toNonIndexed();
+  const pos = nonIdx.attributes.position;
 
-  // Triangulate using THREE.ShapeUtils (same as ExtrudeGeometry uses internally)
-  const outerPts = profile.map(p => new THREE.Vector2(p.x, p.y));
-  const holeArrays = cutoutPolygons
-    .filter(p => p.length >= 3)
-    .map(poly => poly.map(p => new THREE.Vector2(p.x, p.y)));
-
-  const faces = THREE.ShapeUtils.triangulateShape(outerPts, holeArrays);
-
-  // Flat vertex array: [outer vertices..., hole1 vertices..., hole2 vertices..., ...]
-  const allPts: THREE.Vector2[] = [...outerPts];
-  for (const h of holeArrays) allPts.push(...h);
-
-  // Top face at z=thickness
-  for (const p of allPts) verts.push(p.x, p.y, thickness);
-  for (const [a, b, c] of faces) indices.push(a, b, c);
-
-  // Bottom face at z=0 (reversed winding)
-  const botOff = allPts.length;
-  for (const p of allPts) verts.push(p.x, p.y, 0);
-  for (const [a, b, c] of faces) indices.push(botOff + a, botOff + c, botOff + b);
-
-  let vi = allPts.length * 2;
-
-  // Helper: add a sidewall quad between two 2D points
-  function addQuad(x0: number, y0: number, x1: number, y1: number) {
-    verts.push(x0, y0, 0);
-    verts.push(x1, y1, 0);
-    verts.push(x1, y1, thickness);
-    verts.push(x0, y0, thickness);
-    indices.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
-    vi += 4;
+  // Step 2: Keep ONLY top and bottom face triangles (discard all sidewalls)
+  const faceVerts: number[] = [];
+  for (let i = 0; i < pos.count; i += 3) {
+    const z0 = pos.getZ(i), z1 = pos.getZ(i + 1), z2 = pos.getZ(i + 2);
+    const allSameZ = Math.abs(z0 - z1) < 0.001 && Math.abs(z1 - z2) < 0.001;
+    if (allSameZ) {
+      for (let j = 0; j < 3; j++) {
+        faceVerts.push(pos.getX(i + j), pos.getY(i + j), pos.getZ(i + j));
+      }
+    }
   }
 
-  // Helper: project point to fold line local (t, d) space
+  // Step 3: Build ALL sidewalls manually with fold-line awareness
+  const sidewallVerts: number[] = [];
+
   function projectToFold(px: number, py: number, fl: FoldLineInfoForBaseFace) {
     const vx = px - fl.linePoint.x;
     const vy = py - fl.linePoint.y;
@@ -229,7 +224,13 @@ function buildBaseFaceManual(
     };
   }
 
-  const D_TOL = 0.5; // tolerance for "on fold line"
+  function addQuad(x0: number, y0: number, x1: number, y1: number) {
+    // Two triangles forming a quad from (x0,y0,0)→(x1,y1,0)→(x1,y1,t)→(x0,y0,t)
+    sidewallVerts.push(x0, y0, 0, x1, y1, 0, x1, y1, thickness);
+    sidewallVerts.push(x0, y0, 0, x1, y1, thickness, x0, y0, thickness);
+  }
+
+  const D_TOL = 0.5;
 
   // ── Outer profile sidewalls ──
   for (let i = 0; i < profile.length; i++) {
@@ -242,7 +243,6 @@ function buildBaseFaceManual(
       const l1 = projectToFold(p1.x, p1.y, fl);
 
       if (Math.abs(l0.d) < D_TOL && Math.abs(l1.d) < D_TOL) {
-        // Edge is on the fold line — only generate quads for bendSegments
         onFoldLine = true;
         const edgeTMin = Math.min(l0.t, l1.t);
         const edgeTMax = Math.max(l0.t, l1.t);
@@ -268,7 +268,7 @@ function buildBaseFaceManual(
   }
 
   // ── Hole sidewalls ──
-  const HOLE_D_TOL = thickness * 1.5; // generous threshold for hole edge filtering
+  const HOLE_D_TOL = thickness * 1.5;
   for (const holePoly of cutoutPolygons) {
     if (holePoly.length < 3) continue;
     for (let i = 0; i < holePoly.length; i++) {
@@ -280,10 +280,8 @@ function buildBaseFaceManual(
         const l0 = projectToFold(p0.x, p0.y, fl);
         const l1 = projectToFold(p1.x, p1.y, fl);
 
-        // If both endpoints near the fold line
         if (Math.abs(l0.d) < HOLE_D_TOL && Math.abs(l1.d) < HOLE_D_TOL) {
           const midT = (l0.t + l1.t) / 2;
-          // Check if midpoint t falls within any blocked interval
           for (const [bStart, bEnd] of fl.blocked) {
             if (midT >= bStart - 0.5 && midT <= bEnd + 0.5) {
               skip = true;
@@ -300,9 +298,10 @@ function buildBaseFaceManual(
     }
   }
 
+  // Combine face verts + sidewall verts
+  const allVerts = new Float32Array([...faceVerts, ...sidewallVerts]);
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.BufferAttribute(allVerts, 3));
   geo.computeVertexNormals();
   return geo;
 }
