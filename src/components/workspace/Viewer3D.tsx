@@ -349,7 +349,7 @@ function SheetMetalMesh({
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
   );
-  const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry), [geometry]);
+  const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
 
   const edgeMap = useMemo(() => {
     const map = new Map<string, PartEdge>();
