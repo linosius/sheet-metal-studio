@@ -983,14 +983,136 @@ export function getMovingCutouts(
     const poly = clipPolygonByLine([...cutout.polygon], linePoint, negN);
     if (poly.length >= 3) result.push(poly);
   }
-  console.warn('[MOVING-CUTOUTS]', {
-    inputCutouts: cutouts.length,
-    outputPolygons: result.length,
-    outputSizes: result.map(p => p.length),
-    foldId: fold.id,
-    foldLocation: fold.foldLocation,
-  });
   return result;
+}
+
+/**
+ * Compute blocked t-ranges along a fold line where cutouts cross d=0.
+ */
+export function computeFoldLineCutoutBlocked(
+  fold: Fold,
+  profile: Point2D[],
+  thickness: number,
+  movingCutouts: Point2D[][],
+): { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] } | null {
+  const xs = profile.map(p => p.x);
+  const ys = profile.map(p => p.y);
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const faceW = Math.max(...xs) - minX;
+  const faceH = Math.max(...ys) - minY;
+
+  const norm = getFoldNormal(fold, faceW, faceH);
+  const off = foldLineToInnerEdgeOffset(fold.foldLocation, thickness);
+  const fs = { x: minX + fold.lineStart.x - norm.x * off, y: minY + fold.lineStart.y - norm.y * off };
+  const fe = { x: minX + fold.lineEnd.x - norm.x * off, y: minY + fold.lineEnd.y - norm.y * off };
+  const edx = fe.x - fs.x;
+  const edy = fe.y - fs.y;
+  const eLen = Math.hypot(edx, edy);
+  if (eLen < 0.01) return null;
+
+  const tang = { x: edx / eLen, y: edy / eLen };
+
+  function toLocal(p: Point2D): { t: number; d: number } {
+    const vx = p.x - fs.x;
+    const vy = p.y - fs.y;
+    return { t: vx * tang.x + vy * tang.y, d: vx * norm.x + vy * norm.y };
+  }
+
+  const blocked: [number, number][] = [];
+  for (const cutPoly of movingCutouts) {
+    const locs = cutPoly.map(p => toLocal(p));
+    const holePts = locs.map(l => ({ x: l.t, y: l.d }));
+    const crossings: number[] = [];
+    const D_EPS = 0.05;
+    for (let i = 0; i < holePts.length; i++) {
+      const j = (i + 1) % holePts.length;
+      const d1 = holePts[i].y, d2 = holePts[j].y;
+      const sd1 = Math.abs(d1) < D_EPS ? 0 : d1;
+      const sd2 = Math.abs(d2) < D_EPS ? 0 : d2;
+      if ((sd1 <= 0 && sd2 > 0) || (sd1 > 0 && sd2 <= 0)) {
+        const frac = sd1 === 0 ? 0 : (sd2 === 0 ? 1 : d1 / (d1 - d2));
+        const tCross = holePts[i].x + frac * (holePts[j].x - holePts[i].x);
+        crossings.push(tCross);
+      }
+    }
+    crossings.sort((a, b) => a - b);
+    const uniq: number[] = [];
+    for (const c of crossings) {
+      if (uniq.length === 0 || Math.abs(c - uniq[uniq.length - 1]) > 0.05) uniq.push(c);
+    }
+    if (uniq.length >= 2) {
+      for (let k = 0; k + 1 < uniq.length; k++) {
+        blocked.push([uniq[k], uniq[k + 1]]);
+      }
+    }
+  }
+
+  if (blocked.length === 0) return null;
+
+  blocked.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [[blocked[0][0], blocked[0][1]]];
+  for (let i = 1; i < blocked.length; i++) {
+    const last = merged[merged.length - 1];
+    if (blocked[i][0] <= last[1] + 0.01) {
+      last[1] = Math.max(last[1], blocked[i][1]);
+    } else {
+      merged.push([blocked[i][0], blocked[i][1]]);
+    }
+  }
+
+  return { linePoint: fs, tangent: tang, normal: norm, blocked: merged };
+}
+
+/**
+ * Remove side wall triangles from an ExtrudeGeometry where cutouts cross fold lines.
+ * This eliminates the material bridge ("steg") that the ExtrudeGeometry creates at fold boundaries.
+ */
+export function removeSideWallsAtFoldCutouts(
+  geometry: THREE.BufferGeometry,
+  foldCutouts: { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] }[],
+): void {
+  const pos = geometry.getAttribute('position');
+  const idx = geometry.getIndex();
+  if (!idx) return;
+
+  const newIdx: number[] = [];
+  for (let i = 0; i < idx.count; i += 3) {
+    const a = idx.getX(i), b = idx.getX(i + 1), c = idx.getX(i + 2);
+    const verts = [a, b, c].map(vi => ({
+      x: pos.getX(vi), y: pos.getY(vi), z: pos.getZ(vi),
+    }));
+
+    let remove = false;
+    for (const fc of foldCutouts) {
+      // Check if all vertices are on this fold line (d ≈ 0)
+      const ds = verts.map(v =>
+        (v.x - fc.linePoint.x) * fc.normal.x + (v.y - fc.linePoint.y) * fc.normal.y
+      );
+      if (!ds.every(d => Math.abs(d) < 0.5)) continue;
+
+      // All on fold line — get t-values
+      const ts = verts.map(v =>
+        (v.x - fc.linePoint.x) * fc.tangent.x + (v.y - fc.linePoint.y) * fc.tangent.y
+      );
+      const minT = Math.min(...ts);
+      const maxT = Math.max(...ts);
+
+      for (const [bMin, bMax] of fc.blocked) {
+        if (maxT > bMin - 0.1 && minT < bMax + 0.1) {
+          remove = true;
+          break;
+        }
+      }
+      if (remove) break;
+    }
+
+    if (!remove) {
+      newIdx.push(a, b, c);
+    }
+  }
+
+  geometry.setIndex(newIdx);
 }
 
 export interface StressRelief {
@@ -1201,12 +1323,6 @@ export function createFoldMesh(
   childFolds?: Fold[],
   movingCutouts?: Point2D[][],
 ): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
-  console.log('[FOLD-ENTRY]', {
-    foldId: fold.id,
-    movingCutoutsProvided: !!movingCutouts,
-    movingCutoutsCount: movingCutouts?.length ?? 0,
-    movingCutoutsSizes: movingCutouts?.map(c => c.length) ?? [],
-  });
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -1426,20 +1542,8 @@ export function createFoldMesh(
     if (tMax > cursor + 0.01) bendSegments.push([cursor, tMax]);
   }
 
-  console.log('[FOLD-DEBUG]', {
-    tMin, tMax, blocked, bendSegments,
-    tipHolePolyCount: tipHolePoly.length,
-    tipHoleDRanges: tipHolePoly.map(h => {
-      const ds = h.map(v => v.y);
-      return { min: Math.min(...ds).toFixed(2), max: Math.max(...ds).toFixed(2) };
-    }),
-    tipHoleTRanges: tipHolePoly.map(h => {
-      const ts = h.map(v => v.x);
-      return { min: Math.min(...ts).toFixed(2), max: Math.max(...ts).toFixed(2) };
-    }),
-    movingCutoutsCount: movingCutouts?.length ?? 0,
-    holeLocsCount: holeLocs.length,
-  });
+
+
   if (bendSegments.length === 0) return null;
 
   // ── Compute global polygon-edge slopes for tapering ──
