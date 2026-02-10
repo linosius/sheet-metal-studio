@@ -21,9 +21,11 @@ import { FaceSketchPlane } from './FaceSketchPlane';
 
 function createCleanEdgesGeometry(geometry: THREE.BufferGeometry, angle = 15): THREE.EdgesGeometry {
   const clone = geometry.clone();
+  const beforeCount = clone.attributes.position.count;
   clone.deleteAttribute('normal');
   if (clone.hasAttribute('uv')) clone.deleteAttribute('uv');
-  const merged = mergeVertices(clone, 1e-4);
+  const merged = mergeVertices(clone, 1e-3);
+  console.warn('[EDGES] mergeVertices:', beforeCount, '->', merged.attributes.position.count, 'indexed:', !!merged.index);
   merged.computeVertexNormals();
   return new THREE.EdgesGeometry(merged, angle);
 }
