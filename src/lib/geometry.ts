@@ -987,14 +987,143 @@ export function getMovingCutouts(
 }
 
 /**
- * Compute blocked t-ranges along a fold line where cutouts cross d=0.
+ * Robust computation of blocked t-ranges where cutout polygons cross d=foldD.
+ * Three-pass approach:
+ *   1) Edge-intersection: polygon edges crossing d=foldD
+ *   2) Near-line edges: edges nearly parallel to foldD → take both endpoints
+ *   3) Sampling fallback: if no crossings found, sample along t to detect containment
+ * This is the SINGLE SOURCE OF TRUTH for blocked intervals.
  */
-export function computeFoldLineCutoutBlocked(
+export function computeFoldBlockedIntervalsTD(
+  foldD: number,
+  tMin: number,
+  tMax: number,
+  cutoutPolysTD: Point2D[][],
+  eps: number = 0.1,
+): [number, number][] {
+  const blocked: [number, number][] = [];
+
+  function pointInPoly(px: number, py: number, poly: Point2D[]): boolean {
+    let inside = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j].x, yj = poly[j].y;
+      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  for (const poly of cutoutPolysTD) {
+    if (poly.length < 3) continue;
+
+    const events: number[] = [];
+
+    // Pass 1 & 2: edge intersections and near-line edges
+    for (let i = 0; i < poly.length; i++) {
+      const j = (i + 1) % poly.length;
+      const d1 = poly[i].y - foldD;
+      const d2 = poly[j].y - foldD;
+
+      // Near-line: edge nearly on foldD
+      if (Math.abs(d1) < eps && Math.abs(d2) < eps) {
+        events.push(poly[i].x, poly[j].x);
+        continue;
+      }
+
+      // One endpoint on line
+      if (Math.abs(d1) < eps) { events.push(poly[i].x); continue; }
+      if (Math.abs(d2) < eps) { events.push(poly[j].x); continue; }
+
+      // True crossing
+      if ((d1 > 0) !== (d2 > 0)) {
+        const frac = d1 / (d1 - d2);
+        const tCross = poly[i].x + frac * (poly[j].x - poly[i].x);
+        events.push(tCross);
+      }
+    }
+
+    // Deduplicate
+    events.sort((a, b) => a - b);
+    const uniq: number[] = [];
+    for (const e of events) {
+      if (uniq.length === 0 || Math.abs(e - uniq[uniq.length - 1]) > eps * 0.5) uniq.push(e);
+    }
+
+    if (uniq.length >= 2) {
+      // Pair events, verify blocked via midpoint containment
+      for (let k = 0; k + 1 < uniq.length; k++) {
+        const midT = (uniq[k] + uniq[k + 1]) / 2;
+        if (pointInPoly(midT, foldD, poly) || pointInPoly(midT, foldD + eps * 0.1, poly)) {
+          const b0 = Math.max(uniq[k], tMin);
+          const b1 = Math.min(uniq[k + 1], tMax);
+          if (b1 > b0 + 0.01) blocked.push([b0, b1]);
+        }
+      }
+    } else if (uniq.length <= 1) {
+      // Pass 3: sampling fallback
+      const SAMPLES = 20;
+      let insideStart: number | null = null;
+      for (let s = 0; s <= SAMPLES; s++) {
+        const t = tMin + (tMax - tMin) * (s / SAMPLES);
+        const inside = pointInPoly(t, foldD, poly);
+        if (inside && insideStart === null) insideStart = t;
+        if (!inside && insideStart !== null) {
+          blocked.push([insideStart, t]);
+          insideStart = null;
+        }
+      }
+      if (insideStart !== null) blocked.push([insideStart, tMax]);
+    }
+  }
+
+  if (blocked.length === 0) return [];
+
+  // Merge overlapping
+  blocked.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [[blocked[0][0], blocked[0][1]]];
+  for (let i = 1; i < blocked.length; i++) {
+    const last = merged[merged.length - 1];
+    if (blocked[i][0] <= last[1] + 0.01) {
+      last[1] = Math.max(last[1], blocked[i][1]);
+    } else {
+      merged.push([blocked[i][0], blocked[i][1]]);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Compute the complement of blocked intervals within [tMin, tMax].
+ */
+export function complementIntervals(tMin: number, tMax: number, blocked: [number, number][]): [number, number][] {
+  if (blocked.length === 0) return [[tMin, tMax]];
+  const segs: [number, number][] = [];
+  let cursor = tMin;
+  for (const [bStart, bEnd] of blocked) {
+    if (bStart > cursor + 0.01) segs.push([cursor, bStart]);
+    cursor = Math.max(cursor, bEnd);
+  }
+  if (tMax > cursor + 0.01) segs.push([cursor, tMax]);
+  return segs;
+}
+
+/**
+ * Compute the fold line local coordinate system and blocked intervals for a fold.
+ * This is the SINGLE SOURCE OF TRUTH for fold-line topology.
+ */
+export function computeFoldLineInfo(
   fold: Fold,
   profile: Point2D[],
   thickness: number,
-  movingCutouts: Point2D[][],
-): { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] } | null {
+  movingCutouts?: Point2D[][],
+): {
+  linePoint: Point2D; tangent: Point2D; normal: Point2D;
+  tMin: number; tMax: number;
+  blocked: [number, number][];
+  bendSegments: [number, number][];
+} | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -1019,58 +1148,78 @@ export function computeFoldLineCutoutBlocked(
     return { t: vx * tang.x + vy * tang.y, d: vx * norm.x + vy * norm.y };
   }
 
-  const blocked: [number, number][] = [];
-  for (const cutPoly of movingCutouts) {
-    const locs = cutPoly.map(p => toLocal(p));
-    const holePts = locs.map(l => ({ x: l.t, y: l.d }));
-    const crossings: number[] = [];
-    const D_EPS = 0.05;
-    for (let i = 0; i < holePts.length; i++) {
-      const j = (i + 1) % holePts.length;
-      const d1 = holePts[i].y, d2 = holePts[j].y;
-      const sd1 = Math.abs(d1) < D_EPS ? 0 : d1;
-      const sd2 = Math.abs(d2) < D_EPS ? 0 : d2;
-      if ((sd1 <= 0 && sd2 > 0) || (sd1 > 0 && sd2 <= 0)) {
-        const frac = sd1 === 0 ? 0 : (sd2 === 0 ? 1 : d1 / (d1 - d2));
-        const tCross = holePts[i].x + frac * (holePts[j].x - holePts[i].x);
-        crossings.push(tCross);
-      }
-    }
-    crossings.sort((a, b) => a - b);
-    const uniq: number[] = [];
-    for (const c of crossings) {
-      if (uniq.length === 0 || Math.abs(c - uniq[uniq.length - 1]) > 0.05) uniq.push(c);
-    }
-    if (uniq.length >= 2) {
-      for (let k = 0; k + 1 < uniq.length; k++) {
-        blocked.push([uniq[k], uniq[k + 1]]);
+  const profileLocs = profile.map(p => toLocal(p));
+  const foldTs = profileLocs.filter(l => l.d < 1.0).map(l => l.t);
+  if (foldTs.length < 2) return null;
+  const tMin = Math.min(...foldTs);
+  const tMax = Math.max(...foldTs);
+
+  // Convert moving cutouts to TD space using the SAME toLocal mapping
+  let cutoutsTD: Point2D[][] = [];
+  if (movingCutouts && movingCutouts.length > 0) {
+    for (const cutPoly of movingCutouts) {
+      const locs = cutPoly.map(p => toLocal(p));
+      if (locs.length >= 3) {
+        cutoutsTD.push(locs.map(l => ({ x: l.t, y: l.d })));
       }
     }
   }
 
-  if (blocked.length === 0) return null;
+  const blocked = computeFoldBlockedIntervalsTD(0, tMin, tMax, cutoutsTD);
+  const bendSegments = complementIntervals(tMin, tMax, blocked);
 
-  blocked.sort((a, b) => a[0] - b[0]);
-  const merged: [number, number][] = [[blocked[0][0], blocked[0][1]]];
-  for (let i = 1; i < blocked.length; i++) {
-    const last = merged[merged.length - 1];
-    if (blocked[i][0] <= last[1] + 0.01) {
-      last[1] = Math.max(last[1], blocked[i][1]);
-    } else {
-      merged.push([blocked[i][0], blocked[i][1]]);
-    }
-  }
-
-  return { linePoint: fs, tangent: tang, normal: norm, blocked: merged };
+  return { linePoint: fs, tangent: tang, normal: norm, tMin, tMax, blocked, bendSegments };
 }
 
 /**
- * Remove side wall triangles from an ExtrudeGeometry where cutouts cross fold lines.
- * This eliminates the material bridge ("steg") that the ExtrudeGeometry creates at fold boundaries.
+ * Build segmented sidewall quads along a fold edge for unblocked segments only.
+ * This replaces the ExtrudeGeometry sidewalls along the fold line deterministically.
  */
-export function removeSideWallsAtFoldCutouts(
+export function buildFoldEdgeSidewalls(
+  foldLineInfo: {
+    linePoint: Point2D; tangent: Point2D;
+    bendSegments: [number, number][];
+  },
+  thickness: number,
+): THREE.BufferGeometry {
+  const { linePoint, tangent, bendSegments } = foldLineInfo;
+  const verts: number[] = [];
+  const indices: number[] = [];
+  let vi = 0;
+
+  for (const [t0, t1] of bendSegments) {
+    const x0 = linePoint.x + tangent.x * t0;
+    const y0 = linePoint.y + tangent.y * t0;
+    const x1 = linePoint.x + tangent.x * t1;
+    const y1 = linePoint.y + tangent.y * t1;
+
+    // v0: (t0, z=0), v1: (t1, z=0), v2: (t1, z=thickness), v3: (t0, z=thickness)
+    verts.push(x0, y0, 0);
+    verts.push(x1, y1, 0);
+    verts.push(x1, y1, thickness);
+    verts.push(x0, y0, thickness);
+
+    indices.push(vi, vi + 1, vi + 2);
+    indices.push(vi, vi + 2, vi + 3);
+    vi += 4;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  if (verts.length > 0) {
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+/**
+ * Remove ALL sidewall triangles along a fold line from an ExtrudeGeometry.
+ * We rebuild correct segmented sidewalls separately via buildFoldEdgeSidewalls.
+ */
+export function removeAllFoldEdgeSidewalls(
   geometry: THREE.BufferGeometry,
-  foldCutouts: { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] }[],
+  foldLines: { linePoint: Point2D; tangent: Point2D; normal: Point2D; tMin: number; tMax: number }[],
 ): void {
   const pos = geometry.getAttribute('position');
   const idx = geometry.getIndex();
@@ -1084,27 +1233,21 @@ export function removeSideWallsAtFoldCutouts(
     }));
 
     let remove = false;
-    for (const fc of foldCutouts) {
-      // Check if all vertices are on this fold line (d ≈ 0)
+    for (const fl of foldLines) {
       const ds = verts.map(v =>
-        (v.x - fc.linePoint.x) * fc.normal.x + (v.y - fc.linePoint.y) * fc.normal.y
+        (v.x - fl.linePoint.x) * fl.normal.x + (v.y - fl.linePoint.y) * fl.normal.y
       );
-      if (!ds.every(d => Math.abs(d) < 0.5)) continue;
+      if (!ds.every(d => Math.abs(d) < 1.0)) continue;
 
-      // All on fold line — get t-values
       const ts = verts.map(v =>
-        (v.x - fc.linePoint.x) * fc.tangent.x + (v.y - fc.linePoint.y) * fc.tangent.y
+        (v.x - fl.linePoint.x) * fl.tangent.x + (v.y - fl.linePoint.y) * fl.tangent.y
       );
       const minT = Math.min(...ts);
       const maxT = Math.max(...ts);
-
-      for (const [bMin, bMax] of fc.blocked) {
-        if (maxT > bMin - 0.1 && minT < bMax + 0.1) {
-          remove = true;
-          break;
-        }
+      if (maxT > fl.tMin - 0.5 && minT < fl.tMax + 0.5) {
+        remove = true;
+        break;
       }
-      if (remove) break;
     }
 
     if (!remove) {
@@ -1460,89 +1603,9 @@ export function createFoldMesh(
     }
   }
 
-  // ── Split bend line by holes: remove intervals blocked by cutouts at d≈0 ──
-  // Use edge-intersection approach: find where cutout polygon edges cross the d=0 line
-  const blocked: [number, number][] = [];
-  for (const hPts of tipHolePoly) {
-    const crossings: number[] = [];
-    const D_EPS = 0.05; // tolerance for "on the bend line"
-    for (let i = 0; i < hPts.length; i++) {
-      const j = (i + 1) % hPts.length;
-      const d1 = hPts[i].y, d2 = hPts[j].y;
-      // Snap near-zero d values to exactly 0 for robust crossing detection
-      const sd1 = Math.abs(d1) < D_EPS ? 0 : d1;
-      const sd2 = Math.abs(d2) < D_EPS ? 0 : d2;
-      if ((sd1 <= 0 && sd2 > 0) || (sd1 > 0 && sd2 <= 0)) {
-        const frac = sd1 === 0 ? 0 : (sd2 === 0 ? 1 : d1 / (d1 - d2));
-        const tCross = hPts[i].x + frac * (hPts[j].x - hPts[i].x);
-        crossings.push(tCross);
-      }
-    }
-    // Deduplicate nearby crossings and find blocked intervals
-    crossings.sort((a, b) => a - b);
-    const uniq: number[] = [];
-    for (const c of crossings) {
-      if (uniq.length === 0 || Math.abs(c - uniq[uniq.length - 1]) > 0.05) {
-        uniq.push(c);
-      }
-    }
-    if (uniq.length >= 2) {
-      // Pair crossings: use midpoint containment test to verify blocked
-      for (let k = 0; k + 1 < uniq.length; k++) {
-        const midT = (uniq[k] + uniq[k + 1]) / 2;
-        if (pointInPolygonInline(midT, 0, hPts) || pointInPolygonInline(midT, D_EPS * 0.5, hPts)) {
-          const bMin = uniq[k], bMax = uniq[k + 1];
-          if (bMax > tMin && bMin < tMax) {
-            blocked.push([Math.max(bMin, tMin), Math.min(bMax, tMax)]);
-          }
-        }
-      }
-    } else if (uniq.length === 0) {
-      // No crossings — check if bend line is entirely inside this cutout
-      if (pointInPolygonInline(tMin, 0, hPts) && pointInPolygonInline(tMax, 0, hPts)) {
-        blocked.push([tMin, tMax]);
-      }
-    }
-  }
-
-  // Inline point-in-polygon for early use (before the main pointInPolygon is defined)
-  function pointInPolygonInline(px: number, py: number, poly: Point2D[]): boolean {
-    let inside = false;
-    for (let i = 0, j2 = poly.length - 1; i < poly.length; j2 = i++) {
-      const xi = poly[i].x, yi = poly[i].y;
-      const xj = poly[j2].x, yj = poly[j2].y;
-      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
-
-  let bendSegments: [number, number][];
-  if (blocked.length === 0) {
-    bendSegments = [[tMin, tMax]];
-  } else {
-    blocked.sort((a, b) => a[0] - b[0]);
-    const merged: [number, number][] = [[blocked[0][0], blocked[0][1]]];
-    for (let i = 1; i < blocked.length; i++) {
-      const last = merged[merged.length - 1];
-      if (blocked[i][0] <= last[1] + 0.01) {
-        last[1] = Math.max(last[1], blocked[i][1]);
-      } else {
-        merged.push([blocked[i][0], blocked[i][1]]);
-      }
-    }
-    bendSegments = [];
-    let cursor = tMin;
-    for (const [bStart, bEnd] of merged) {
-      if (bStart > cursor + 0.01) bendSegments.push([cursor, bStart]);
-      cursor = bEnd;
-    }
-    if (tMax > cursor + 0.01) bendSegments.push([cursor, tMax]);
-  }
-
-
+  // ── Split bend line using the SINGLE SOURCE OF TRUTH ──
+  const blocked = computeFoldBlockedIntervalsTD(0, tMin, tMax, tipHolePoly);
+  const bendSegments = complementIntervals(tMin, tMax, blocked);
 
   if (bendSegments.length === 0) return null;
 

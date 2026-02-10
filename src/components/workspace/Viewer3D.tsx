@@ -14,7 +14,7 @@ import {
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions, FlangeTipClipLine,
   ProfileCutout, getFixedCutouts, getMovingCutouts,
-  computeFoldLineCutoutBlocked, removeSideWallsAtFoldCutouts,
+  computeFoldLineInfo, removeAllFoldEdgeSidewalls, buildFoldEdgeSidewalls,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -329,26 +329,33 @@ function SheetMetalMesh({
     () => cutouts && cutouts.length > 0 ? getFixedCutouts(cutouts, folds, profile, thickness) : undefined,
     [cutouts, folds, profile, thickness],
   );
-  const foldCutoutRanges = useMemo(() => {
+  const foldLineInfos = useMemo(() => {
     if (!cutouts || cutouts.length === 0) return [];
-    const ranges: { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] }[] = [];
+    const infos: ReturnType<typeof computeFoldLineInfo>[] = [];
     const bFolds = folds.filter(f => isBaseFaceFold(f));
     for (const fold of bFolds) {
       const movCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
-      if (movCutouts.length === 0) continue;
-      const result = computeFoldLineCutoutBlocked(fold, profile, thickness, movCutouts);
-      if (result) ranges.push(result);
+      const info = computeFoldLineInfo(fold, profile, thickness, movCutouts.length > 0 ? movCutouts : undefined);
+      if (info && info.blocked.length > 0) infos.push(info);
     }
-    return ranges;
+    return infos;
   }, [cutouts, folds, profile, thickness]);
 
   const geometry = useMemo(() => {
     const geo = createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons);
-    if (foldCutoutRanges.length > 0) {
-      removeSideWallsAtFoldCutouts(geo, foldCutoutRanges);
+    if (foldLineInfos.length > 0) {
+      // Remove ALL extrude sidewalls along fold edges, then add segmented ones back
+      removeAllFoldEdgeSidewalls(geo, foldLineInfos.filter(Boolean) as NonNullable<typeof foldLineInfos[0]>[]);
     }
     return geo;
-  }, [fixedProfile, thickness, fixedCutoutPolygons, foldCutoutRanges]);
+  }, [fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
+
+  // Build segmented sidewall geometries for fold edges (replaces removed extrude sidewalls)
+  const foldSidewallGeos = useMemo(() => {
+    return foldLineInfos
+      .filter(Boolean)
+      .map(info => buildFoldEdgeSidewalls(info!, thickness));
+  }, [foldLineInfos, thickness]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
@@ -473,7 +480,16 @@ function SheetMetalMesh({
         />
       </mesh>
 
-      {/* Wireframe edges — only in sketch/fold mode, hidden in view and edge mode */}
+      {/* Segmented fold-edge sidewalls (replaces removed extrude sidewalls) */}
+      {foldSidewallGeos.map((geo, i) => (
+        <mesh key={`fold-sidewall-${i}`} geometry={geo}>
+          <meshStandardMaterial
+            color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#bcc2c8'}
+            metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
+          />
+        </mesh>
+      ))}
+
       {!isViewMode && !isEdgeMode && (
         <lineSegments geometry={edgesGeometry}>
           <lineBasicMaterial color="#475569" linewidth={1} />
