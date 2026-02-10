@@ -1415,8 +1415,6 @@ export function createFoldMesh(
       arcHoleLocs.push(clippedArcCut);
     }
   }
-  console.log('[ARC-HOLE] movingCutouts:', movingCutouts?.length ?? 0, 'arcHoleLocs:', arcHoleLocs.length,
-    arcHoleLocs.length > 0 ? 'poly0 vertices:' + arcHoleLocs[0].length : '');
 
   // Point-in-polygon test (ray casting)
   function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
@@ -1528,7 +1526,7 @@ export function createFoldMesh(
       arcIdx.push(v00, v11, v10, v00, v01, v11);
     }
   }
-  if (skippedCells > 0) console.log('[ARC-HOLE] skipped', skippedCells, 'inner cells');
+  
 
   // Left side surface — connecting inner to outer along left boundary
   for (let i = 0; i < ARC_N; i++) {
@@ -1624,70 +1622,99 @@ export function createFoldMesh(
     return t;
   }
 
-  // Build shape in (t,d) space for triangulation
-  const tipShape = new THREE.Shape();
-  tipShape.moveTo(locs[0].t, locs[0].d);
-  for (let i = 1; i < locs.length; i++) {
-    tipShape.lineTo(locs[i].t, locs[i].d);
-  }
-  tipShape.closePath();
-
-  // Add cutout holes in (t,d) space — clip hole vertices to d >= EPS
-  // to prevent earcut failure when hole boundary touches outer shape at d=0
-  const TIP_HOLE_EPS = 0.01;
+  // ── Convert cutouts to (t,d) space for tip grid hole detection ──
   const holeLocs: { t: number; d: number }[][] = [];
+  const tipHolePoly: Point2D[][] = []; // same holes as Point2D for pointInPolygon reuse
   if (movingCutouts && movingCutouts.length > 0) {
     for (const cutPoly of movingCutouts) {
       const cutLocs = cutPoly.map(p => toLocal(p));
       if (cutLocs.length < 3) continue;
-      // Clip hole to d >= EPS to avoid earcut boundary collision
-      const clippedLocs = cutLocs.map(l => ({
-        t: l.t,
-        d: Math.max(l.d, TIP_HOLE_EPS)
-      }));
-      const holePath = new THREE.Path();
-      holePath.moveTo(clippedLocs[0].t, clippedLocs[0].d);
-      for (let i = 1; i < clippedLocs.length; i++) {
-        holePath.lineTo(clippedLocs[i].t, clippedLocs[i].d);
+      holeLocs.push(cutLocs);
+      tipHolePoly.push(cutLocs.map(l => ({ x: l.t, y: l.d })));
+    }
+  }
+
+  // movPoly as Point2D for pointInPolygon
+  const movPolyPts: Point2D[] = locs.map(l => ({ x: l.t, y: l.d }));
+
+  // ── Grid-based tip triangulation (replaces earcut/ShapeGeometry) ──
+  const GRID_T_TIP = 40;
+  const GRID_D_TIP = 40;
+
+  // Bounding box of movPoly in (t,d) space
+  const tMinTip = Math.min(...locs.map(l => l.t));
+  const tMaxTip = Math.max(...locs.map(l => l.t));
+  const dMinTip = 0;
+  const dMaxTip = Math.max(...locs.map(l => l.d));
+
+  function tipCellInsideHole(tc: number, dc: number): boolean {
+    for (const hole of tipHolePoly) {
+      if (pointInPolygon(tc, dc, hole)) return true;
+    }
+    return false;
+  }
+
+  // Build inner vertex grid
+  const tipInnerVIdx: number[][] = [];
+  for (let it = 0; it <= GRID_T_TIP; it++) {
+    tipInnerVIdx[it] = [];
+    for (let id = 0; id <= GRID_D_TIP; id++) {
+      const t = tMinTip + (tMaxTip - tMinTip) * (it / GRID_T_TIP);
+      const d = dMinTip + (dMaxTip - dMinTip) * (id / GRID_D_TIP);
+      const tT = taperT(t, d);
+      tipInnerVIdx[it][id] = addTipV(tipInner(tT, d), nTipInner);
+    }
+  }
+
+  // Build outer vertex grid
+  const tipOuterVIdx: number[][] = [];
+  for (let it = 0; it <= GRID_T_TIP; it++) {
+    tipOuterVIdx[it] = [];
+    for (let id = 0; id <= GRID_D_TIP; id++) {
+      const t = tMinTip + (tMaxTip - tMinTip) * (it / GRID_T_TIP);
+      const d = dMinTip + (dMaxTip - dMinTip) * (id / GRID_D_TIP);
+      const tT = taperT(t, d);
+      tipOuterVIdx[it][id] = addTipV(tipOuter(tT, d), nTipOuter);
+    }
+  }
+
+  // Emit triangles — skip cells outside movPoly or inside any cutout hole
+  // Use multi-point sampling (center + 4 corners) for robust detection
+  for (let it = 0; it < GRID_T_TIP; it++) {
+    for (let id = 0; id < GRID_D_TIP; id++) {
+      const tc = tMinTip + (tMaxTip - tMinTip) * ((it + 0.5) / GRID_T_TIP);
+      const dc = dMinTip + (dMaxTip - dMinTip) * ((id + 0.5) / GRID_D_TIP);
+
+      // Must be inside movPoly
+      if (!pointInPolygon(tc, dc, movPolyPts)) continue;
+
+      // Check center + corners for hole overlap
+      let inHole = false;
+      const sampleOffsets = [
+        [0.5, 0.5], [0.05, 0.05], [0.95, 0.05], [0.05, 0.95], [0.95, 0.95]
+      ];
+      for (const [st, sd] of sampleOffsets) {
+        const sampleT = tMinTip + (tMaxTip - tMinTip) * ((it + st) / GRID_T_TIP);
+        const sampleD = dMinTip + (dMaxTip - dMinTip) * ((id + sd) / GRID_D_TIP);
+        if (tipCellInsideHole(sampleT, sampleD)) { inHole = true; break; }
       }
-      holePath.closePath();
-      tipShape.holes.push(holePath);
-      holeLocs.push(cutLocs); // keep original for side walls
+      if (inHole) continue;
+
+      // Inner face triangles
+      const i00 = tipInnerVIdx[it][id];
+      const i10 = tipInnerVIdx[it + 1][id];
+      const i01 = tipInnerVIdx[it][id + 1];
+      const i11 = tipInnerVIdx[it + 1][id + 1];
+      tipIdx.push(i00, i10, i11, i00, i11, i01);
+
+      // Outer face triangles (reverse winding)
+      const o00 = tipOuterVIdx[it][id];
+      const o10 = tipOuterVIdx[it + 1][id];
+      const o01 = tipOuterVIdx[it][id + 1];
+      const o11 = tipOuterVIdx[it + 1][id + 1];
+      tipIdx.push(o00, o11, o10, o00, o01, o11);
     }
   }
-
-  // Triangulate using ShapeGeometry
-  const shapeGeo = new THREE.ShapeGeometry(tipShape);
-  const shapePos = shapeGeo.attributes.position;
-  const shapeIdx = shapeGeo.index;
-
-  // Inner face
-  const innerBase = tipVi;
-  for (let i = 0; i < shapePos.count; i++) {
-    const t = taperT(shapePos.getX(i), shapePos.getY(i));
-    const d = shapePos.getY(i);
-    addTipV(tipInner(t, d), nTipInner);
-  }
-  if (shapeIdx) {
-    for (let i = 0; i < shapeIdx.count; i += 3) {
-      tipIdx.push(innerBase + shapeIdx.getX(i), innerBase + shapeIdx.getX(i + 1), innerBase + shapeIdx.getX(i + 2));
-    }
-  }
-
-  // Outer face (reverse winding)
-  const outerBase = tipVi;
-  for (let i = 0; i < shapePos.count; i++) {
-    const t = taperT(shapePos.getX(i), shapePos.getY(i));
-    const d = shapePos.getY(i);
-    addTipV(tipOuter(t, d), nTipOuter);
-  }
-  if (shapeIdx) {
-    for (let i = 0; i < shapeIdx.count; i += 3) {
-      tipIdx.push(outerBase + shapeIdx.getX(i), outerBase + shapeIdx.getX(i + 2), outerBase + shapeIdx.getX(i + 1));
-    }
-  }
-
-  shapeGeo.dispose();
 
   // Side strips — outer polygon boundary
   const tipLocs = locs.map(l => ({ t: taperT(l.t, l.d), d: l.d }));
