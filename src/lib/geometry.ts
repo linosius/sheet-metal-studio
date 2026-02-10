@@ -353,27 +353,9 @@ function buildBaseFaceManual(
 
       if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
         outerFoldNearCount++;
-        // Edge lies on fold line → only emit quads for unblocked (bendSegments) intervals
-        const t0 = l0.t, t1 = l1.t;
-        const allowed = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
-        const keep = clipIntervalByAllowed([t0, t1], allowed, epsT);
-        const denom = t1 - t0;
-
-        if (Math.abs(denom) < 1e-12) {
-          // Degenerate: midpoint test
-          const insideAllowed = allowed.some(([aa, bb]) =>
-            t0 >= Math.min(aa, bb) - epsT && t0 <= Math.max(aa, bb) + epsT
-          );
-          if (insideAllowed) emitSidewallEdge(p0, p1);
-        } else {
-          for (const [ka, kb] of keep) {
-            const aAlpha = clamp01((ka - t0) / denom);
-            const bAlpha = clamp01((kb - t0) / denom);
-            const P = lerp2(p0, p1, aAlpha);
-            const Q = lerp2(p0, p1, bAlpha);
-            emitSidewallEdge(P, Q);
-          }
-        }
+        // Edge lies on fold line → skip sidewall entirely.
+        // The arc's side walls at ang=0 already close this boundary.
+        // No sidewall quads needed here — avoids coplanar double-geometry.
         handledByFold = true;
         break;
       }
@@ -498,32 +480,8 @@ export function computeBoundaryEdges(
           const l1 = projectToFold(p1.x, p1.y, fl);
 
           if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
-            const t0 = l0.t, t1 = l1.t;
-            const allowed = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
-            const keep = clipIntervalByAllowed([t0, t1], allowed, epsT);
-            const denom = t1 - t0;
-
-            if (Math.abs(denom) < 1e-12) {
-              const insideAllowed = allowed.some(([aa, bb]) =>
-                t0 >= Math.min(aa, bb) - epsT && t0 <= Math.max(aa, bb) + epsT
-              );
-              if (insideAllowed) {
-                addEdge(p0.x, p0.y, 0, p1.x, p1.y, 0);
-                addEdge(p0.x, p0.y, thickness, p1.x, p1.y, thickness);
-                addEdge(p0.x, p0.y, 0, p0.x, p0.y, thickness);
-              }
-            } else {
-              for (const [ka, kb] of keep) {
-                const aAlpha = clamp01((ka - t0) / denom);
-                const bAlpha = clamp01((kb - t0) / denom);
-                const P = lerp2(p0, p1, aAlpha);
-                const Q = lerp2(p0, p1, bAlpha);
-                addEdge(P.x, P.y, 0, Q.x, Q.y, 0);
-                addEdge(P.x, P.y, thickness, Q.x, Q.y, thickness);
-                addEdge(P.x, P.y, 0, P.x, P.y, thickness);
-                addEdge(Q.x, Q.y, 0, Q.x, Q.y, thickness);
-              }
-            }
+            // Edge lies on fold line → skip boundary edges entirely.
+            // The arc boundary edges at ang=0 already draw the connecting lines here.
             handledByFold = true;
             break;
           }
