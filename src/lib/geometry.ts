@@ -1824,7 +1824,7 @@ export function createFoldMesh(
   thickness: number,
   childFolds?: Fold[],
   movingCutouts?: Point2D[][],
-): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry; tipBoundaryEdges: THREE.BufferGeometry } | null {
+): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry; tipBoundaryEdges: THREE.BufferGeometry; arcBoundaryEdges: THREE.BufferGeometry } | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -2032,6 +2032,7 @@ export function createFoldMesh(
   const tipNormals: number[] = [];
   const tipIdx: number[] = [];
   const tipBoundaryVerts: number[] = [];
+  const arcBoundaryVerts: number[] = [];
   let tipVi = 0;
   function addTipV(v: THREE.Vector3, n: THREE.Vector3): number {
     tipVerts.push(v.x, v.y, v.z);
@@ -2204,6 +2205,59 @@ export function createFoldMesh(
       const v2 = addArcV(p2, fN);
       const v3 = addArcV(p3, fN);
       arcIdx.push(v0, v2, v3, v0, v3, v1);
+    }
+
+    // ── Arc boundary edges for this segment ──
+    // Left side curves (inner + outer)
+    for (let i = 0; i < ARC_N; i++) {
+      const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+      const liC = arcInner(cStep.tLI, cStep.ang);
+      const liN = arcInner(nStep.tLI, nStep.ang);
+      const loC = arcOuter(cStep.tLO, cStep.ang);
+      const loN = arcOuter(nStep.tLO, nStep.ang);
+      arcBoundaryVerts.push(liC.x, liC.y, liC.z, liN.x, liN.y, liN.z);
+      arcBoundaryVerts.push(loC.x, loC.y, loC.z, loN.x, loN.y, loN.z);
+    }
+    // Right side curves (inner + outer)
+    for (let i = 0; i < ARC_N; i++) {
+      const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+      const riC = arcInner(cStep.tRI, cStep.ang);
+      const riN = arcInner(nStep.tRI, nStep.ang);
+      const roC = arcOuter(cStep.tRO, cStep.ang);
+      const roN = arcOuter(nStep.tRO, nStep.ang);
+      arcBoundaryVerts.push(riC.x, riC.y, riC.z, riN.x, riN.y, riN.z);
+      arcBoundaryVerts.push(roC.x, roC.y, roC.z, roN.x, roN.y, roN.z);
+    }
+    // Connecting edges at left/right corners (inner↔outer) at ang=0 and ang=A
+    {
+      const a0 = arcSteps[0], aA = arcSteps[ARC_N];
+      // Left at ang=0
+      const l0i = arcInner(a0.tLI, a0.ang), l0o = arcOuter(a0.tLO, a0.ang);
+      arcBoundaryVerts.push(l0i.x, l0i.y, l0i.z, l0o.x, l0o.y, l0o.z);
+      // Left at ang=A
+      const lAi = arcInner(aA.tLI, aA.ang), lAo = arcOuter(aA.tLO, aA.ang);
+      arcBoundaryVerts.push(lAi.x, lAi.y, lAi.z, lAo.x, lAo.y, lAo.z);
+      // Right at ang=0
+      const r0i = arcInner(a0.tRI, a0.ang), r0o = arcOuter(a0.tRO, a0.ang);
+      arcBoundaryVerts.push(r0i.x, r0i.y, r0i.z, r0o.x, r0o.y, r0o.z);
+      // Right at ang=A
+      const rAi = arcInner(aA.tRI, aA.ang), rAo = arcOuter(aA.tRO, aA.ang);
+      arcBoundaryVerts.push(rAi.x, rAi.y, rAi.z, rAo.x, rAo.y, rAo.z);
+    }
+    // Arc hole boundary edges
+    for (const holePts of segArcHoleLocs) {
+      for (let i = 0; i < holePts.length; i++) {
+        const j = (i + 1) % holePts.length;
+        const pII = arcInner(holePts[i].x, holePts[i].y);
+        const pIJ = arcInner(holePts[j].x, holePts[j].y);
+        const pOI = arcOuter(holePts[i].x, holePts[i].y);
+        const pOJ = arcOuter(holePts[j].x, holePts[j].y);
+        // Inner + outer outlines
+        arcBoundaryVerts.push(pII.x, pII.y, pII.z, pIJ.x, pIJ.y, pIJ.z);
+        arcBoundaryVerts.push(pOI.x, pOI.y, pOI.z, pOJ.x, pOJ.y, pOJ.z);
+        // Connecting at each vertex
+        arcBoundaryVerts.push(pII.x, pII.y, pII.z, pOI.x, pOI.y, pOI.z);
+      }
     }
 
     // Arc hole side walls
@@ -2407,7 +2461,10 @@ export function createFoldMesh(
   const tipBoundaryGeo = new THREE.BufferGeometry();
   tipBoundaryGeo.setAttribute('position', new THREE.Float32BufferAttribute(tipBoundaryVerts, 3));
 
-  return { arc: arcGeo, tip: tipGeo, tipBoundaryEdges: tipBoundaryGeo };
+  const arcBoundaryGeo = new THREE.BufferGeometry();
+  arcBoundaryGeo.setAttribute('position', new THREE.Float32BufferAttribute(arcBoundaryVerts, 3));
+
+  return { arc: arcGeo, tip: tipGeo, tipBoundaryEdges: tipBoundaryGeo, arcBoundaryEdges: arcBoundaryGeo };
 }
 
 /**
