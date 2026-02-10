@@ -983,6 +983,13 @@ export function getMovingCutouts(
     const poly = clipPolygonByLine([...cutout.polygon], linePoint, negN);
     if (poly.length >= 3) result.push(poly);
   }
+  console.warn('[MOVING-CUTOUTS]', {
+    inputCutouts: cutouts.length,
+    outputPolygons: result.length,
+    outputSizes: result.map(p => p.length),
+    foldId: fold.id,
+    foldLocation: fold.foldLocation,
+  });
   return result;
 }
 
@@ -1194,6 +1201,12 @@ export function createFoldMesh(
   childFolds?: Fold[],
   movingCutouts?: Point2D[][],
 ): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
+  console.log('[FOLD-ENTRY]', {
+    foldId: fold.id,
+    movingCutoutsProvided: !!movingCutouts,
+    movingCutoutsCount: movingCutouts?.length ?? 0,
+    movingCutoutsSizes: movingCutouts?.map(c => c.length) ?? [],
+  });
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
