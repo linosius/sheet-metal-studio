@@ -1389,63 +1389,32 @@ export function createFoldMesh(
     arcSteps.push({ ang, tLI: tL, tRI: tR, tLO: tL, tRO: tR });
   }
 
-  // ── Build arc as ShapeGeometry in (t, θ) parameter space with cutout holes ──
-  // Arc outline polygon in (t, θ) space
-  const arcOutlinePts: Point2D[] = [];
-  // Bottom edge: left to right at θ=0
-  arcOutlinePts.push({ x: arcSteps[0].tLI, y: 0 });
-  arcOutlinePts.push({ x: arcSteps[0].tRI, y: 0 });
-  // Right edge: bottom to top
-  for (let i = 1; i <= ARC_N; i++) {
-    arcOutlinePts.push({ x: arcSteps[i].tRI, y: arcSteps[i].ang });
-  }
-  // Top edge: right to left at θ=A
-  arcOutlinePts.push({ x: arcSteps[ARC_N].tLI, y: arcSteps[ARC_N].ang });
-  // Left edge: top to bottom
-  for (let i = ARC_N - 1; i >= 1; i--) {
-    arcOutlinePts.push({ x: arcSteps[i].tLI, y: arcSteps[i].ang });
-  }
+  // ── Convert cutouts to (t, θ) space for arc grid hole detection ──
 
-  const arcShape = new THREE.Shape();
-  arcShape.moveTo(arcOutlinePts[0].x, arcOutlinePts[0].y);
-  for (let i = 1; i < arcOutlinePts.length; i++) {
-    arcShape.lineTo(arcOutlinePts[i].x, arcOutlinePts[i].y);
+  const R_neutral = R + K_FACTOR * TH;
+  const arcHoleLocs: Point2D[][] = [];
+  if (movingCutouts && movingCutouts.length > 0) {
+    for (const cutPoly of movingCutouts) {
+      const cutTTheta: Point2D[] = cutPoly.map(p => {
+        const loc = toLocal(p);
+        const theta = loc.d / R_neutral;
+        return { x: loc.t, y: theta };
+      });
+      if (cutTTheta.length < 3) continue;
+      const minTheta = Math.min(...cutTTheta.map(p => p.y));
+      const maxTheta = Math.max(...cutTTheta.map(p => p.y));
+      const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
+      if (!hasArcPart) continue;
+      // Clip to arc bounds
+      let clippedArcCut = [...cutTTheta];
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
+      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
+      if (clippedArcCut.length < 3) continue;
+      arcHoleLocs.push(clippedArcCut);
+    }
   }
-  arcShape.closePath();
-
-   // Convert cutout polygons to (t, θ) space for arc hole detection
-   const R_neutral = R + K_FACTOR * TH;
-   const arcHoleLocs: Point2D[][] = [];
-   if (movingCutouts && movingCutouts.length > 0) {
-     console.log('[ARC-DEBUG] movingCutouts count:', movingCutouts.length);
-     console.log('[ARC-DEBUG] A (bend angle rad):', A, 'R:', R, 'TH:', TH, 'R_neutral:', R_neutral);
-     console.log('[ARC-DEBUG] tMin:', tMin, 'tMax:', tMax);
-     for (const cutPoly of movingCutouts) {
-       console.log('[ARC-DEBUG] cutPoly raw:', JSON.stringify(cutPoly));
-       const cutTTheta: Point2D[] = cutPoly.map(p => {
-         const loc = toLocal(p);
-         const theta = loc.d / R_neutral;
-         console.log('[ARC-DEBUG] point', JSON.stringify(p), '-> t:', loc.t, 'd:', loc.d, 'theta:', theta);
-         return { x: loc.t, y: theta };
-       });
-       if (cutTTheta.length < 3) { console.log('[ARC-DEBUG] skipped: < 3 pts'); continue; }
-       const minTheta = Math.min(...cutTTheta.map(p => p.y));
-       const maxTheta = Math.max(...cutTTheta.map(p => p.y));
-       console.log('[ARC-DEBUG] minTheta:', minTheta, 'maxTheta:', maxTheta, 'A:', A);
-       const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
-       if (!hasArcPart) { console.log('[ARC-DEBUG] skipped: no arc part'); continue; }
-       // Clip to arc bounds
-       let clippedArcCut = [...cutTTheta];
-       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
-       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
-       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
-       clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
-       console.log('[ARC-DEBUG] clipped polygon pts:', clippedArcCut.length, JSON.stringify(clippedArcCut));
-       if (clippedArcCut.length < 3) { console.log('[ARC-DEBUG] skipped after clip'); continue; }
-       arcHoleLocs.push(clippedArcCut);
-     }
-     console.log('[ARC-DEBUG] arcHoleLocs count:', arcHoleLocs.length);
-   }
 
   // Point-in-polygon test (ray casting)
   function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
@@ -1658,20 +1627,27 @@ export function createFoldMesh(
   }
   tipShape.closePath();
 
-  // Add cutout holes in (t,d) space
+  // Add cutout holes in (t,d) space — clip hole vertices to d >= EPS
+  // to prevent earcut failure when hole boundary touches outer shape at d=0
+  const TIP_HOLE_EPS = 0.01;
   const holeLocs: { t: number; d: number }[][] = [];
   if (movingCutouts && movingCutouts.length > 0) {
     for (const cutPoly of movingCutouts) {
       const cutLocs = cutPoly.map(p => toLocal(p));
       if (cutLocs.length < 3) continue;
+      // Clip hole to d >= EPS to avoid earcut boundary collision
+      const clippedLocs = cutLocs.map(l => ({
+        t: l.t,
+        d: Math.max(l.d, TIP_HOLE_EPS)
+      }));
       const holePath = new THREE.Path();
-      holePath.moveTo(cutLocs[0].t, cutLocs[0].d);
-      for (let i = 1; i < cutLocs.length; i++) {
-        holePath.lineTo(cutLocs[i].t, cutLocs[i].d);
+      holePath.moveTo(clippedLocs[0].t, clippedLocs[0].d);
+      for (let i = 1; i < clippedLocs.length; i++) {
+        holePath.lineTo(clippedLocs[i].t, clippedLocs[i].d);
       }
       holePath.closePath();
       tipShape.holes.push(holePath);
-      holeLocs.push(cutLocs);
+      holeLocs.push(cutLocs); // keep original for side walls
     }
   }
 
@@ -1730,10 +1706,13 @@ export function createFoldMesh(
     tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
   }
 
-  // Side strips — hole boundaries
+  // Side strips — hole boundaries (skip edges at d≈0, those belong to arc boundary)
   for (const hLocs of holeLocs) {
     for (let i = 0; i < hLocs.length; i++) {
       const j = (i + 1) % hLocs.length;
+      // Skip wall segments where both vertices are at the fold line (d≈0)
+      // — the arc geometry handles that boundary
+      if (hLocs[i].d < DTOL && hLocs[j].d < DTOL) continue;
       const pII = tipInner(hLocs[i].t, hLocs[i].d);
       const pIJ = tipInner(hLocs[j].t, hLocs[j].d);
       const pOI = tipOuter(hLocs[i].t, hLocs[i].d);
