@@ -1,52 +1,72 @@
 
-
-# Fix: Internal Triangulation Lines + Diagnostic Logging
+# Fix: Internal Triangulation Lines on All Surfaces
 
 ## Problem
-Two issues visible in the screenshot:
-1. **Grid pattern on faces**: `EdgesGeometry` sees non-indexed geometry from `MeshBuilder` and treats every triangle edge as a boundary edge, showing the full triangulation grid on top/bottom surfaces.
-2. **Stripe along fold line**: Either base sidewalls aren't being clipped, or arc/tip seams are generating full-length walls, or both are overlapping.
+The `mergeVertices` call doesn't actually merge adjacent coplanar vertices because it compares ALL attributes, including normals. With `toNonIndexed()` + `computeVertexNormals()`, adjacent triangles on curved surfaces get slightly different smoothed normals, so `mergeVertices` treats them as distinct vertices. `EdgesGeometry` then still sees every triangle edge as a boundary.
+
+This affects all three mesh types: base face, flanges, and fold tips.
+
+## Root Cause (confirmed via Three.js source and StackOverflow)
+`BufferGeometryUtils.mergeVertices()` hashes ALL vertex attributes (position + normal + uv). Two vertices at the same position but with different normals will NOT be merged. Since the geometry is non-indexed with per-vertex normals, this defeats the merge.
+
+## Solution
+**Delete the normal attribute before merging, then recompute after.** This forces `mergeVertices` to only consider position, producing a properly indexed geometry. Then `computeVertexNormals()` gives `EdgesGeometry` the angle information it needs.
+
+Create a shared helper function and apply it everywhere `EdgesGeometry` is created.
 
 ## Changes
 
-### 1. Fix EdgesGeometry grid lines (`src/components/workspace/Viewer3D.tsx`, line 352)
+### File: `src/components/workspace/Viewer3D.tsx`
 
-Add import for `mergeVertices` from Three.js BufferGeometryUtils, then clone + merge vertices before creating `EdgesGeometry`:
-
+**Add helper function** (near top, after imports):
+```typescript
+function createCleanEdgesGeometry(geometry: THREE.BufferGeometry, angle = 15): THREE.EdgesGeometry {
+  const clone = geometry.clone();
+  clone.deleteAttribute('normal');
+  if (clone.hasAttribute('uv')) clone.deleteAttribute('uv');
+  const merged = mergeVertices(clone, 1e-4);
+  merged.computeVertexNormals();
+  return new THREE.EdgesGeometry(merged, angle);
+}
 ```
+
+**FlangeMesh** (line 64-69) -- replace:
+```typescript
 // Before:
-const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
+return new THREE.EdgesGeometry(geometry, 15);
 
 // After:
-const edgesGeometry = useMemo(() => {
-  const merged = mergeVertices(geometry.clone(), 1e-4);
-  merged.computeVertexNormals();
-  return new THREE.EdgesGeometry(merged, 15);
-}, [geometry]);
+return createCleanEdgesGeometry(geometry);
 ```
 
-**Why this works**: `mergeVertices` creates an indexed geometry where adjacent coplanar triangles share vertices. `EdgesGeometry` then correctly identifies that internal edges have 0-degree angle between neighbors (both normals point the same direction) and hides them. Only sharp edges (face-to-sidewall at 90 degrees) remain visible.
+**FoldMesh tipEdgesGeo** (line 144-149) -- replace:
+```typescript
+// Before:
+return new THREE.EdgesGeometry(result.tip, 15);
 
-The original non-indexed geometry with flat normals is still used for rendering -- only the `EdgesGeometry` input is affected.
-
-### 2. Add diagnostic logging to identify stripe source (`src/lib/geometry.ts`)
-
-Add temporary `console.warn` calls inside `buildBaseFaceManual` to report:
-- How many outer edges were detected as fold-near vs total
-- How many hole edges were detected as fold-near vs total  
-- The `foldDTol` value and number of fold line infos
-
-This will immediately reveal if the fold-near detection is triggering at all. If `foldNearCount = 0`, the sidewall clipping never activates and the full wall is emitted along the fold line.
-
-```
-// At end of outer sidewall loop:
-console.warn("[BASE] outer edges", { total: profile.length, foldNear: foldNearCount, foldDTol, foldLines: foldLineInfos.length });
-
-// At end of hole sidewall loop:
-console.warn("[BASE] hole edges", { total: totalHoleEdges, foldNear: holeNearCount });
+// After:
+return createCleanEdgesGeometry(result.tip);
 ```
 
-### Files changed
-- `src/components/workspace/Viewer3D.tsx`: Add `mergeVertices` import + modify `edgesGeometry` computation (line 352)
-- `src/lib/geometry.ts`: Add diagnostic logging in `buildBaseFaceManual` sidewall loops (temporary, for debugging)
+**Base face edgesGeometry** (line 353-357) -- simplify to use the same helper:
+```typescript
+// Before:
+const merged = mergeVertices(geometry.clone(), 1e-4);
+merged.computeVertexNormals();
+return new THREE.EdgesGeometry(merged, 15);
 
+// After:
+return createCleanEdgesGeometry(geometry);
+```
+
+### No changes to `geometry.ts`
+
+## Why This Works
+- Deleting normals before merge means `mergeVertices` only compares positions
+- Vertices at the same XYZ position (within tolerance 1e-4) get merged into a single vertex
+- After merging, `computeVertexNormals()` produces averaged normals that correctly reflect surface angles
+- `EdgesGeometry` then sees that adjacent coplanar triangles share vertices with the same normal direction (angle = 0 degrees, below the 15-degree threshold) and hides internal edges
+- Sharp edges (face-to-sidewall at 90 degrees) remain visible
+
+## Files Changed
+- `src/components/workspace/Viewer3D.tsx`: Add helper function + update 3 EdgesGeometry call sites
