@@ -1389,14 +1389,6 @@ export function createFoldMesh(
     return inside;
   }
 
-  console.log('[FOLD-DEBUG]', {
-    tMin, tMax,
-    tipHolePolyCount: tipHolePoly.length,
-    tipHolePolyDValues: tipHolePoly.map(h => h.map(v => v.y.toFixed(4))),
-    tipHoleTValues: tipHolePoly.map(h => h.map(v => v.x.toFixed(4))),
-    blocked,
-    movingCutoutsCount: movingCutouts?.length ?? 0,
-  });
 
   let bendSegments: [number, number][];
   if (blocked.length === 0) {
