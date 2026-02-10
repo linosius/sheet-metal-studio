@@ -1,79 +1,120 @@
 
 
-## Fix: Replace Tip Earcut with Grid-Based Triangulation
+## Fix: Merge Boundary-Touching Cutouts Into Outer Polygon (Smooth Edges)
 
-### Root Cause
+### Problem
 
-The arc grid IS working correctly (792 of 960 cells skipped). The visible material inside the cutout at the bend zone comes from the **tip (flange face) geometry**, which still uses `THREE.ShapeGeometry` (earcut triangulation).
+The grid-based triangulation for the tip (and arc) creates visible **staircase/stepped edges** along curved cutouts. A 40x40 grid simply cannot approximate a circle smoothly -- each cell is either fully included or excluded, producing jagged rectangular steps.
 
-When the cutout semicircle has its flat edge at `d=0.01` (the epsilon-inset fold line) and spans nearly the full width of the outer polygon, earcut produces **incorrect triangles** that fill the hole. These triangles at `d ~ 0` map to 3D positions at `theta = A` (the arc/tip junction), creating the visible curved strip of material.
+The previous earcut approach had smooth edges but failed when hole boundaries coincided with the outer boundary at d=0.
 
-This is fundamentally the same topology problem identified: the tip's outer boundary at `d=0` is continuous across the cutout, and earcut cannot reliably handle a hole that nearly coincides with the outer boundary across its full width.
+### Root Cause (Why Earcut Fails)
 
-### Solution
+Earcut treats holes as **separate interior polygons**. When a hole's vertices lie exactly on the outer boundary (at d=0, the fold line), earcut cannot determine "inside" vs "outside" and produces garbage triangles. This is a well-known limitation.
 
-Replace the tip's `THREE.ShapeGeometry` (earcut) with a **manual grid-based triangulation** -- the same approach that already works for the arc. This completely eliminates earcut from the fold mesh pipeline.
+### Solution: Boundary Merging
+
+Instead of adding the cutout as a hole, **merge it into the outer boundary polygon itself**. When a cutout crosses d=0:
+
+- The outer polygon currently runs continuously along d=0
+- The cutout has a flat edge at d=0 that overlaps with the outer boundary
+- Solution: Route the outer polygon **around** the cutout opening
+
+Before (fails):
+```text
+Outer: [A]--[B]--[C]--[D] (continuous along d=0)
+Hole:  [H1]--[H2]--[H3]  (touching d=0 between B and C)
+```
+
+After (works):
+```text
+Single polygon: [A]--[B]--[H1]--[H2]--[H3]--[C]--[D]
+(no hole needed -- cutout is part of the boundary)
+```
+
+Earcut handles this perfectly because it's just one polygon with a notch. Curved edges remain smooth because the cutout's original vertices (e.g., circle approximation points) are preserved exactly.
 
 ### Technical Changes
 
-**File: `src/lib/geometry.ts`** -- Tip geometry section (lines ~1627-1690)
+**File: `src/lib/geometry.ts`**
 
-Replace the ShapeGeometry-based tip with:
+#### Part 1: Tip Geometry -- Replace grid with boundary-merged earcut
 
-1. **Compute bounding box** of `movPoly` in `(t, d)` local space to get `[tMinTip, tMaxTip]` and `[dMin, dMax]`.
+Remove the entire grid-based tip triangulation (lines ~1640-1717) and replace with:
 
-2. **Create a grid** with `GRID_T_TIP` (e.g., 40) cells along `t` and `GRID_D_TIP` (e.g., 40) cells along `d`.
+1. Convert movPoly and cutouts to (t, d) local space (already done)
+2. For each cutout that touches d=0:
+   - Find the two "entry/exit" points where the cutout crosses d=0 (or the leftmost/rightmost points at d < DTOL)
+   - Sort them by t-coordinate along the d=0 boundary
+   - Split the outer polygon's d=0 edge at those points
+   - Insert the cutout's d>0 vertices (in reverse order) between the split points
+   - Result: single polygon, no holes
+3. For cutouts entirely inside the tip (not touching d=0): keep as normal holes (earcut handles interior holes fine)
+4. Create `THREE.Shape` from the merged polygon, add any interior-only holes
+5. Use `THREE.ShapeGeometry` to triangulate -- smooth curved edges, no staircase
+6. Map the 2D (t,d) vertices to 3D using tipInner/tipOuter (same as before)
 
-3. **For each grid vertex**, compute `(t, d)` and map to 3D using `tipInner(t, d)` / `tipOuter(t, d)`.
-
-4. **For each grid cell**, test the center point:
-   - Is it inside `movPoly` (the outer polygon in t,d space)? If no, skip.
-   - Is it inside any cutout polygon (in t,d space)? If yes, skip.
-   - Otherwise, emit two triangles for inner surface, two for outer surface.
-
-5. **Side walls**: Keep the existing side wall generation for the outer polygon boundary and hole boundaries.
-
-6. **Remove** the `THREE.ShapeGeometry` / earcut code entirely for the tip.
-
-### Pseudocode
-
+Pseudocode:
 ```text
-// Grid bounds from movPoly
-tMinTip = min(locs.t), tMaxTip = max(locs.t)
-dMinTip = 0, dMaxTip = max(locs.d)
+outerPoly = movPolyLocs (in t,d space)
+interiorHoles = []
 
-GRID_T_TIP = 40
-GRID_D_TIP = 40
+for each cutout:
+  cutLocs = cutout mapped to (t,d) space
+  touchingD0 = any vertex has d < DTOL
 
-// Build vertex grid
-for it = 0..GRID_T_TIP:
-  for id = 0..GRID_D_TIP:
-    t = tMinTip + (tMaxTip - tMinTip) * it / GRID_T_TIP
-    d = dMinTip + (dMaxTip - dMinTip) * id / GRID_D_TIP
-    // Apply fold-line tapering for vertices near d=0
-    tTapered = taperT(t, d)
-    vertex = tipInner(tTapered, d)
-    store vertex index
+  if touchingD0:
+    // Find entry/exit points on d=0 edge
+    entryT, exitT = min/max t of vertices with d < DTOL
+    // Get the d>0 arc of the cutout (sorted CCW)
+    arcVertices = cutout vertices with d >= DTOL
+    // Merge into outer polygon:
+    // Split outer polygon's d=0 segment at entryT and exitT
+    // Insert arcVertices between the split points
+    outerPoly = mergeNotch(outerPoly, entryT, exitT, arcVertices)
+  else:
+    interiorHoles.push(cutLocs)
 
-// Build triangles with cell-level hole testing
-for it = 0..GRID_T_TIP-1:
-  for id = 0..GRID_D_TIP-1:
-    tc, dc = cell center
-    if not pointInPolygon(tc, dc, movPolyLocs): continue  // outside face
-    if pointInPolygon(tc, dc, cutoutLocs): continue       // inside hole
-    emit triangles from 4 corner vertices
+shape = new THREE.Shape(outerPoly)
+for hole in interiorHoles:
+  shape.holes.push(new THREE.Path(hole))
+
+geo = new THREE.ShapeGeometry(shape)
+// Map each vertex (t,d) -> tipInner(t,d) and tipOuter(t,d)
 ```
 
-### Benefits
+#### Part 2: Arc Geometry -- Replace grid with boundary-merged earcut in (t, theta) space
 
-- **No earcut dependency** -- immune to boundary-touching holes
-- **Consistent approach** -- same grid logic as the arc, proven to work
-- **Clean topology** -- cells inside holes are simply never created, providing true topological separation
-- **No epsilon hacks** -- no need for `TIP_HOLE_EPS` insets
+Same approach applied to the arc, in (t, theta) parameter space:
 
-### Cleanup
+1. Define the arc outer boundary as a polygon in (t, theta) space:
+   `[(tMin,0), (tMax,0), (tMax,A), (tMin,A)]` (with tapering applied)
+2. For cutouts that touch theta=0 or theta=A, merge them into the boundary
+3. For interior cutouts, add as holes
+4. Triangulate with `THREE.ShapeGeometry` in (t, theta) space
+5. Map each resulting vertex to 3D using arcInner(t, theta) / arcOuter(t, theta)
 
-- Remove `TIP_HOLE_EPS` constant and epsilon-clamping logic
-- Remove `THREE.ShapeGeometry` creation and disposal
-- Remove the `[ARC-HOLE]` debug console.log statements
-- Keep hole side wall generation (adjusted to use cutout polygons in `(t,d)` space)
+#### Part 3: Cleanup
+
+- Remove grid constants `GRID_T_TIP`, `GRID_D_TIP`, `GRID_T`
+- Remove `cellOverlapsHole`, `tipCellInsideHole`, multi-point sampling logic
+- Remove grid vertex index arrays `tipInnerVIdx`, `tipOuterVIdx`, `innerVIdx`, `outerVIdx`
+- Keep side wall generation for both outer boundary and hole boundaries
+
+### Why This Works
+
+- **Smooth edges**: The cutout's original vertices (circle approximation with many points) are used directly -- no grid discretization
+- **No earcut failure**: No hole touches the outer boundary, because boundary-touching cutouts are merged INTO the boundary
+- **Correct topology**: The merged polygon has a physical notch where the cutout is -- there is no continuous surface across the cutout
+- **Performance**: ShapeGeometry is faster than a 40x40 grid with per-cell polygon tests
+- **Same visual quality as Inventor**: Inventor uses the same conceptual approach (face splitting at cutout boundaries)
+
+### Benefits Over Grid Approach
+
+| Aspect | Grid (current) | Boundary Merge (proposed) |
+|--------|---------------|--------------------------|
+| Edge quality | Staircase/stepped | Smooth curves |
+| Performance | 1600 cells x 5 polygon tests | Single earcut pass |
+| Topology | Cell-level exclusion | True boundary separation |
+| Complexity | High (sampling, thresholds) | Moderate (polygon merging) |
+
