@@ -1,120 +1,119 @@
 
 
-## Fix: Merge Boundary-Touching Cutouts Into Outer Polygon (Smooth Edges)
+## Bend-Line Splitting Pipeline: Topological Face Separation Before Fold
 
 ### Problem
 
-The grid-based triangulation for the tip (and arc) creates visible **staircase/stepped edges** along curved cutouts. A 40x40 grid simply cannot approximate a circle smoothly -- each cell is either fully included or excluded, producing jagged rectangular steps.
+The bend line runs continuously through cutouts. Even though individual triangles/cells are removed from the arc and tip surfaces, the geometry is still generated as one continuous piece spanning the full `tMin..tMax` range. This creates a topologically connected surface across the cutout -- a "steg" (bridge) that no amount of cell skipping or boundary merging can eliminate.
 
-The previous earcut approach had smooth edges but failed when hole boundaries coincided with the outer boundary at d=0.
+### Solution: Split Bend Segments at Cutout Boundaries
 
-### Root Cause (Why Earcut Fails)
+Instead of generating one arc+tip pair for the full `tMin..tMax` range and then trying to punch holes, generate **multiple separate arc+tip pairs** -- one per valid bend segment that doesn't pass through a cutout.
 
-Earcut treats holes as **separate interior polygons**. When a hole's vertices lie exactly on the outer boundary (at d=0, the fold line), earcut cannot determine "inside" vs "outside" and produces garbage triangles. This is a well-known limitation.
+This is the user's pragmatic "Step 1" (bend-line clipping) which directly eliminates the steg without requiring a full half-edge planar graph.
 
-### Solution: Boundary Merging
+### Algorithm
 
-Instead of adding the cutout as a hole, **merge it into the outer boundary polygon itself**. When a cutout crosses d=0:
-
-- The outer polygon currently runs continuously along d=0
-- The cutout has a flat edge at d=0 that overlaps with the outer boundary
-- Solution: Route the outer polygon **around** the cutout opening
-
-Before (fails):
 ```text
-Outer: [A]--[B]--[C]--[D] (continuous along d=0)
-Hole:  [H1]--[H2]--[H3]  (touching d=0 between B and C)
-```
+Input:
+  bendLine in (t,d) space: from (tMin, 0) to (tMax, 0)
+  cutouts in (t,d) space
 
-After (works):
-```text
-Single polygon: [A]--[B]--[H1]--[H2]--[H3]--[C]--[D]
-(no hole needed -- cutout is part of the boundary)
-```
+Step 1: Intersect bend line with each cutout polygon
+  - For each cutout, find intersection parameters u where
+    the line d=0 crosses the cutout boundary edges
+  - Also check if tMin or tMax is inside a cutout
 
-Earcut handles this perfectly because it's just one polygon with a notch. Curved edges remain smooth because the cutout's original vertices (e.g., circle approximation points) are preserved exactly.
+Step 2: Build valid bend segments
+  - Collect all intersection t-values
+  - Sort them along t
+  - For each interval [t_i, t_{i+1}], test midpoint:
+    if midpoint is inside any cutout -> drop segment
+    else -> keep as valid bend segment
+
+Step 3: For each valid bend segment [tSegMin, tSegMax]:
+  - Generate arc geometry only for t in [tSegMin, tSegMax]
+  - Generate tip geometry only for t in [tSegMin, tSegMax]
+  - Generate side walls at segment boundaries
+
+Result: Multiple disconnected arc+tip mesh pairs,
+        no geometry bridges across cutouts
+```
 
 ### Technical Changes
 
 **File: `src/lib/geometry.ts`**
 
-#### Part 1: Tip Geometry -- Replace grid with boundary-merged earcut
+#### 1. New helper function: `splitBendLineByHoles`
 
-Remove the entire grid-based tip triangulation (lines ~1640-1717) and replace with:
+Clips the bend line interval `[tMin, tMax]` at `d=0` against all cutout polygons in `(t,d)` space. Returns an array of valid `[tSegMin, tSegMax]` intervals.
 
-1. Convert movPoly and cutouts to (t, d) local space (already done)
-2. For each cutout that touches d=0:
-   - Find the two "entry/exit" points where the cutout crosses d=0 (or the leftmost/rightmost points at d < DTOL)
-   - Sort them by t-coordinate along the d=0 boundary
-   - Split the outer polygon's d=0 edge at those points
-   - Insert the cutout's d>0 vertices (in reverse order) between the split points
-   - Result: single polygon, no holes
-3. For cutouts entirely inside the tip (not touching d=0): keep as normal holes (earcut handles interior holes fine)
-4. Create `THREE.Shape` from the merged polygon, add any interior-only holes
-5. Use `THREE.ShapeGeometry` to triangulate -- smooth curved edges, no staircase
-6. Map the 2D (t,d) vertices to 3D using tipInner/tipOuter (same as before)
+- For each cutout polygon (in `(t,d)` local space), find the t-values where the cutout boundary crosses `d=0` (line-segment intersection with `d=0`)
+- Also test whether `tMin` and `tMax` themselves are inside any cutout
+- Sort all intersection t-values, test midpoints of each sub-interval with `pointInPolygon`, keep intervals where midpoint is NOT inside any hole
 
-Pseudocode:
+#### 2. Refactor `createFoldMesh` return type
+
+Change from returning one `{ arc, tip }` to returning an array: `{ arc: BufferGeometry; tip: BufferGeometry }[]` -- one entry per valid bend segment.
+
+Or simpler: merge all segment geometries into single arc/tip `BufferGeometry` objects (just concatenate vertex/index buffers). This avoids changing the component interface.
+
+**Chosen approach**: Keep the single `{ arc, tip }` return. Internally, loop over each bend segment and accumulate vertices/indices into the existing `arcVerts/arcIdx` and `tipVerts/tipIdx` arrays. The segments are just sub-ranges of `t`, so the existing arc and tip generation code can be parameterized by `[tSegMin, tSegMax]` instead of using the global `[tMin, tMax]`.
+
+#### 3. Modify arc generation
+
+Currently the arc grid spans `tMin..tMax` uniformly. Change to:
+
 ```text
-outerPoly = movPolyLocs (in t,d space)
-interiorHoles = []
-
-for each cutout:
-  cutLocs = cutout mapped to (t,d) space
-  touchingD0 = any vertex has d < DTOL
-
-  if touchingD0:
-    // Find entry/exit points on d=0 edge
-    entryT, exitT = min/max t of vertices with d < DTOL
-    // Get the d>0 arc of the cutout (sorted CCW)
-    arcVertices = cutout vertices with d >= DTOL
-    // Merge into outer polygon:
-    // Split outer polygon's d=0 segment at entryT and exitT
-    // Insert arcVertices between the split points
-    outerPoly = mergeNotch(outerPoly, entryT, exitT, arcVertices)
-  else:
-    interiorHoles.push(cutLocs)
-
-shape = new THREE.Shape(outerPoly)
-for hole in interiorHoles:
-  shape.holes.push(new THREE.Path(hole))
-
-geo = new THREE.ShapeGeometry(shape)
-// Map each vertex (t,d) -> tipInner(t,d) and tipOuter(t,d)
+for each segment [tSegMin, tSegMax]:
+  generate GRID_T subdivisions from tSegMin to tSegMax
+  generate GRID_THETA subdivisions from 0 to A
+  skip cells inside holes (keep existing cellOverlapsHole)
+  add left/right side walls at tSegMin, tSegMax
 ```
 
-#### Part 2: Arc Geometry -- Replace grid with boundary-merged earcut in (t, theta) space
+The existing hole-cell-skipping remains as a safety net for cutouts that don't cross d=0 (fully interior holes).
 
-Same approach applied to the arc, in (t, theta) parameter space:
+#### 4. Modify tip generation
 
-1. Define the arc outer boundary as a polygon in (t, theta) space:
-   `[(tMin,0), (tMax,0), (tMax,A), (tMin,A)]` (with tapering applied)
-2. For cutouts that touch theta=0 or theta=A, merge them into the boundary
-3. For interior cutouts, add as holes
-4. Triangulate with `THREE.ShapeGeometry` in (t, theta) space
-5. Map each resulting vertex to 3D using arcInner(t, theta) / arcOuter(t, theta)
+Same approach: for each bend segment, the tip outer polygon is clipped to the segment's t-range. The boundary-merge logic operates per segment, so each segment's tip polygon is a sub-portion of the full `movPoly` that only spans `[tSegMin, tSegMax]` along the fold line.
 
-#### Part 3: Cleanup
+Concretely:
+- Clip `movPoly` to `t >= tSegMin` and `t <= tSegMax` (using `clipPolygonByLine` with vertical lines in t,d space)
+- Apply the existing boundary-merge + ShapeGeometry triangulation on this clipped sub-polygon
+- The hole boundaries now don't touch the outer boundary's d=0 edge within this segment (because the segment ends at the hole boundary)
 
-- Remove grid constants `GRID_T_TIP`, `GRID_D_TIP`, `GRID_T`
-- Remove `cellOverlapsHole`, `tipCellInsideHole`, multi-point sampling logic
-- Remove grid vertex index arrays `tipInnerVIdx`, `tipOuterVIdx`, `innerVIdx`, `outerVIdx`
-- Keep side wall generation for both outer boundary and hole boundaries
+#### 5. Tapering adjustment
+
+The tapering logic (`leftSlope`, `rightSlope`) currently uses the polygon vertices adjacent to the leftmost/rightmost fold-line vertices. With per-segment generation, each segment needs its own taper slopes computed from the polygon edges adjacent to its endpoints. For segments that end at a cutout boundary (not at the polygon edge), slope = 0 (no tapering -- the boundary is a vertical cut).
+
+#### 6. Side walls at segment boundaries
+
+At each bend segment's tMin/tMax, generate side wall quads connecting inner to outer surfaces (both for arc and tip). This creates the "cut face" visible when looking into the cutout from the side.
+
+#### 7. Cleanup
+
+- Remove `cellOverlapsHole` multi-point sampling (or keep as fallback for interior holes)
+- Remove boundary-merge logic complexity (segments won't have boundary-touching holes by construction)
+- Remove debug logs
 
 ### Why This Works
 
-- **Smooth edges**: The cutout's original vertices (circle approximation with many points) are used directly -- no grid discretization
-- **No earcut failure**: No hole touches the outer boundary, because boundary-touching cutouts are merged INTO the boundary
-- **Correct topology**: The merged polygon has a physical notch where the cutout is -- there is no continuous surface across the cutout
-- **Performance**: ShapeGeometry is faster than a 40x40 grid with per-cell polygon tests
-- **Same visual quality as Inventor**: Inventor uses the same conceptual approach (face splitting at cutout boundaries)
+The bend line is physically split at cutout boundaries. Each segment generates geometry independently. There is no vertex, edge, or triangle connecting geometry across the cutout. The steg is eliminated by construction, not by triangle removal.
 
-### Benefits Over Grid Approach
+### Impact on Other Systems
 
-| Aspect | Grid (current) | Boundary Merge (proposed) |
-|--------|---------------|--------------------------|
-| Edge quality | Staircase/stepped | Smooth curves |
-| Performance | 1600 cells x 5 polygon tests | Single earcut pass |
-| Topology | Cell-level exclusion | True boundary separation |
-| Complexity | High (sampling, thresholds) | Moderate (polygon merging) |
+- **Viewer3D.tsx**: No interface change needed (still receives `{ arc, tip }`)
+- **Bend lines visual**: `computeFoldBendLines` should also be split per segment for correct visual display (bend lines should end at holes). This is a visual-only change, can be done as follow-up.
+- **Unfold**: No impact (unfold works from the profile + cutouts separately)
+- **Flange edges**: No impact (computed from fold geometry, not from mesh)
+
+### Execution Order
+
+1. Implement `splitBendLineByHoles(tMin, tMax, cutoutsInLocalSpace)` helper
+2. Refactor arc generation into a per-segment loop
+3. Refactor tip generation into a per-segment loop  
+4. Adjust side wall generation for segment boundaries
+5. Test with circular cutout crossing fold line
+6. Remove dead code and debug logs
 
