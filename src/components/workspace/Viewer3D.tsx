@@ -144,6 +144,11 @@ function FoldMesh({
     return result.tipBoundaryEdges;
   }, [result]);
 
+  const arcEdgesGeo = useMemo(() => {
+    if (!result?.arcBoundaryEdges) return null;
+    return result.arcBoundaryEdges;
+  }, [result]);
+
   const bendLines = useMemo(() => {
     const { bendStart, bendEnd } = computeFoldBendLines(profile, fold, thickness);
     const toTuples = (pts: THREE.Vector3[]) =>
@@ -205,6 +210,11 @@ function FoldMesh({
       </mesh>
       {showLines && tipEdgesGeo && (
         <lineSegments geometry={tipEdgesGeo}>
+          <lineBasicMaterial color="#475569" linewidth={1} />
+        </lineSegments>
+      )}
+      {showLines && arcEdgesGeo && (
+        <lineSegments geometry={arcEdgesGeo}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
@@ -1013,6 +1023,7 @@ export function Viewer3D({
       lines.push(`  arc positions: ${result.arc.attributes.position.count}`);
       lines.push(`  tip positions: ${result.tip.attributes.position.count}`);
       lines.push(`  tip boundary edge segments: ${result.tipBoundaryEdges.attributes.position.count / 2}`);
+      lines.push(`  arc boundary edge segments: ${result.arcBoundaryEdges.attributes.position.count / 2}`);
     });
 
     const output = lines.join('\n');
