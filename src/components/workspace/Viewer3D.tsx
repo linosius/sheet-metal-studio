@@ -19,6 +19,15 @@ import {
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
+function createCleanEdgesGeometry(geometry: THREE.BufferGeometry, angle = 15): THREE.EdgesGeometry {
+  const clone = geometry.clone();
+  clone.deleteAttribute('normal');
+  if (clone.hasAttribute('uv')) clone.deleteAttribute('uv');
+  const merged = mergeVertices(clone, 1e-4);
+  merged.computeVertexNormals();
+  return new THREE.EdgesGeometry(merged, angle);
+}
+
 interface SheetMetalMeshProps {
   profile: Point2D[];
   thickness: number;
@@ -65,7 +74,7 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
     if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
       return null;
     }
-    return new THREE.EdgesGeometry(geometry, 15);
+    return createCleanEdgesGeometry(geometry);
   }, [geometry]);
   const bendLines = useMemo(() => {
     const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
@@ -145,7 +154,7 @@ function FoldMesh({
     if (!result?.tip || !result.tip.attributes.position || result.tip.attributes.position.count === 0) {
       return null;
     }
-    return new THREE.EdgesGeometry(result.tip, 15);
+    return createCleanEdgesGeometry(result.tip);
   }, [result]);
 
   const bendLines = useMemo(() => {
@@ -351,9 +360,7 @@ function SheetMetalMesh({
     [profile, thickness, flanges, folds],
   );
   const edgesGeometry = useMemo(() => {
-    const merged = mergeVertices(geometry.clone(), 1e-4);
-    merged.computeVertexNormals();
-    return new THREE.EdgesGeometry(merged, 15);
+    return createCleanEdgesGeometry(geometry);
   }, [geometry]);
 
   const edgeMap = useMemo(() => {
