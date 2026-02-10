@@ -1413,6 +1413,20 @@ export function createFoldMesh(
     if (tMax > cursor + 0.01) bendSegments.push([cursor, tMax]);
   }
 
+  console.log('[FOLD-DEBUG]', {
+    tMin, tMax, blocked, bendSegments,
+    tipHolePolyCount: tipHolePoly.length,
+    tipHoleDRanges: tipHolePoly.map(h => {
+      const ds = h.map(v => v.y);
+      return { min: Math.min(...ds).toFixed(2), max: Math.max(...ds).toFixed(2) };
+    }),
+    tipHoleTRanges: tipHolePoly.map(h => {
+      const ts = h.map(v => v.x);
+      return { min: Math.min(...ts).toFixed(2), max: Math.max(...ts).toFixed(2) };
+    }),
+    movingCutoutsCount: movingCutouts?.length ?? 0,
+    holeLocsCount: holeLocs.length,
+  });
   if (bendSegments.length === 0) return null;
 
   // ── Compute global polygon-edge slopes for tapering ──
