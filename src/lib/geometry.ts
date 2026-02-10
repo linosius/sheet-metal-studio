@@ -172,11 +172,100 @@ export interface FoldLineInfoForBaseFace {
   bendSegments: [number, number][];
 }
 
+// ── Helper utilities for deterministic base face construction ──
+
+function clamp01(x: number) {
+  return Math.max(0, Math.min(1, x));
+}
+
+function lerp2(a: Point2D, b: Point2D, s: number): Point2D {
+  return { x: a.x + (b.x - a.x) * s, y: a.y + (b.y - a.y) * s };
+}
+
+function triNormal(v0: THREE.Vector3, v1: THREE.Vector3, v2: THREE.Vector3): THREE.Vector3 {
+  const e1 = new THREE.Vector3().subVectors(v1, v0);
+  const e2 = new THREE.Vector3().subVectors(v2, v0);
+  return new THREE.Vector3().crossVectors(e1, e2).normalize();
+}
+
+function mergeIntervalsForBase(intervals: [number, number][], eps = 1e-9): [number, number][] {
+  const xs = intervals
+    .map(([a, b]) => (a <= b ? [a, b] as [number, number] : [b, a] as [number, number]))
+    .sort((p, q) => p[0] - q[0]);
+  const out: [number, number][] = [];
+  for (const it of xs) {
+    if (!out.length) { out.push(it); continue; }
+    const last = out[out.length - 1];
+    if (it[0] <= last[1] + eps) last[1] = Math.max(last[1], it[1]);
+    else out.push(it);
+  }
+  return out;
+}
+
+function complementIntervalsForBase(
+  domain: [number, number],
+  blocked: [number, number][],
+  eps = 1e-9
+): [number, number][] {
+  const [D0, D1] = domain[0] <= domain[1] ? domain : [domain[1], domain[0]];
+  const b = mergeIntervalsForBase(blocked, eps).filter(([a, c]) => c > D0 + eps && a < D1 - eps);
+  const out: [number, number][] = [];
+  let cur = D0;
+  for (const [a, c] of b) {
+    const aa = Math.max(a, D0);
+    const cc = Math.min(c, D1);
+    if (aa > cur + eps) out.push([cur, aa]);
+    cur = Math.max(cur, cc);
+  }
+  if (D1 > cur + eps) out.push([cur, D1]);
+  return out;
+}
+
+function clipIntervalByAllowed(
+  seg: [number, number],
+  allowed: [number, number][],
+  eps = 1e-9
+): [number, number][] {
+  const [s0, s1] = seg[0] <= seg[1] ? seg : [seg[1], seg[0]];
+  const out: [number, number][] = [];
+  for (const [a0, a1] of allowed) {
+    const lo = Math.max(s0, Math.min(a0, a1));
+    const hi = Math.min(s1, Math.max(a0, a1));
+    if (hi > lo + eps) out.push([lo, hi]);
+  }
+  return out;
+}
+
+/** Accumulates non-indexed triangle geometry with explicit flat normals */
+class MeshBuilder {
+  pos: number[] = [];
+  nor: number[] = [];
+
+  addTri(v0: THREE.Vector3, v1: THREE.Vector3, v2: THREE.Vector3, n?: THREE.Vector3) {
+    const nn = n ?? triNormal(v0, v1, v2);
+    this.pos.push(v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z);
+    this.nor.push(nn.x, nn.y, nn.z, nn.x, nn.y, nn.z, nn.x, nn.y, nn.z);
+  }
+
+  addQuad(v00: THREE.Vector3, v10: THREE.Vector3, v11: THREE.Vector3, v01: THREE.Vector3) {
+    const n = triNormal(v00, v10, v11);
+    this.addTri(v00, v10, v11, n);
+    this.addTri(v00, v11, v01, n);
+  }
+
+  buildGeometry(): THREE.BufferGeometry {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+    return g;
+  }
+}
+
 /**
- * Build base face geometry using ExtrudeGeometry for top/bottom faces
- * (which handles holes correctly), but replacing ALL sidewalls with
- * manually constructed ones that respect fold-line blocked intervals.
- * This eliminates the steg (material bridge) problem.
+ * Deterministic base face geometry:
+ * - Top/Bottom faces via ShapeGeometry (no sidewalls ever generated)
+ * - Sidewalls manually constructed, fold-aware (outer + holes)
+ * - All normals explicit and flat — no computeVertexNormals() needed
  */
 function buildBaseFaceManual(
   profile: Point2D[],
@@ -184,7 +273,12 @@ function buildBaseFaceManual(
   cutoutPolygons: Point2D[][],
   foldLineInfos: FoldLineInfoForBaseFace[],
 ): THREE.BufferGeometry {
-  // Step 1: Use ExtrudeGeometry for correct top/bottom face triangulation
+  if (profile.length < 3) return new THREE.BufferGeometry();
+
+  const epsT = 1e-9;
+  const foldDTol = Math.max(1e-6, thickness * 0.25);
+
+  // ── 1) Shape + holes setup ──
   const shape = profileToShape(profile);
   if (cutoutPolygons && cutoutPolygons.length > 0) {
     for (const poly of cutoutPolygons) {
@@ -196,24 +290,38 @@ function buildBaseFaceManual(
       shape.holes.push(holePath);
     }
   }
-  const extruded = new THREE.ExtrudeGeometry(shape, { depth: thickness, bevelEnabled: false });
-  const nonIdx = extruded.toNonIndexed();
-  const pos = nonIdx.attributes.position;
 
-  // Step 2: Keep ONLY top and bottom face triangles (discard all sidewalls)
-  const faceVerts: number[] = [];
-  for (let i = 0; i < pos.count; i += 3) {
-    const z0 = pos.getZ(i), z1 = pos.getZ(i + 1), z2 = pos.getZ(i + 2);
-    const allSameZ = Math.abs(z0 - z1) < 0.001 && Math.abs(z1 - z2) < 0.001;
-    if (allSameZ) {
-      for (let j = 0; j < 3; j++) {
-        faceVerts.push(pos.getX(i + j), pos.getY(i + j), pos.getZ(i + j));
-      }
+  // ── 2) Faces via ShapeGeometry (never generates sidewalls) ──
+  const geom2d = new THREE.ShapeGeometry(shape);
+  const posAttr = geom2d.getAttribute('position') as THREE.BufferAttribute;
+  const idxAttr = geom2d.getIndex();
+
+  const topN = new THREE.Vector3(0, 0, 1);
+  const botN = new THREE.Vector3(0, 0, -1);
+  const mb = new MeshBuilder();
+
+  const getV = (i: number, z: number) =>
+    new THREE.Vector3(posAttr.getX(i), posAttr.getY(i), z);
+
+  if (idxAttr) {
+    const idx = idxAttr.array;
+    for (let k = 0; k < idx.length; k += 3) {
+      const a = idx[k], b = idx[k + 1], c = idx[k + 2];
+      // Top face at z=thickness, original winding
+      mb.addTri(getV(a, thickness), getV(b, thickness), getV(c, thickness), topN);
+      // Bottom face at z=0, reversed winding (a,c,b)
+      mb.addTri(getV(a, 0), getV(c, 0), getV(b, 0), botN);
+    }
+  } else {
+    for (let i = 0; i < posAttr.count; i += 3) {
+      mb.addTri(getV(i, thickness), getV(i + 1, thickness), getV(i + 2, thickness), topN);
+      mb.addTri(getV(i, 0), getV(i + 2, 0), getV(i + 1, 0), botN);
     }
   }
 
-  // Step 3: Build ALL sidewalls manually with fold-line awareness
-  const sidewallVerts: number[] = [];
+  geom2d.dispose();
+
+  // ── 3) Manual sidewalls (outer + holes), fold-aware ──
 
   function projectToFold(px: number, py: number, fl: FoldLineInfoForBaseFace) {
     const vx = px - fl.linePoint.x;
@@ -224,86 +332,122 @@ function buildBaseFaceManual(
     };
   }
 
-  function addQuad(x0: number, y0: number, x1: number, y1: number) {
-    // Two triangles forming a quad from (x0,y0,0)→(x1,y1,0)→(x1,y1,t)→(x0,y0,t)
-    sidewallVerts.push(x0, y0, 0, x1, y1, 0, x1, y1, thickness);
-    sidewallVerts.push(x0, y0, 0, x1, y1, thickness, x0, y0, thickness);
+  function emitSidewallEdge(A: Point2D, B: Point2D) {
+    const v00 = new THREE.Vector3(A.x, A.y, 0);
+    const v10 = new THREE.Vector3(B.x, B.y, 0);
+    const v11 = new THREE.Vector3(B.x, B.y, thickness);
+    const v01 = new THREE.Vector3(A.x, A.y, thickness);
+    mb.addQuad(v00, v10, v11, v01);
   }
-
-  const D_TOL = 0.5;
 
   // ── Outer profile sidewalls ──
   for (let i = 0; i < profile.length; i++) {
     const j = (i + 1) % profile.length;
     const p0 = profile[i], p1 = profile[j];
 
-    let onFoldLine = false;
+    let handledByFold = false;
     for (const fl of foldLineInfos) {
       const l0 = projectToFold(p0.x, p0.y, fl);
       const l1 = projectToFold(p1.x, p1.y, fl);
 
-      if (Math.abs(l0.d) < D_TOL && Math.abs(l1.d) < D_TOL) {
-        onFoldLine = true;
-        const edgeTMin = Math.min(l0.t, l1.t);
-        const edgeTMax = Math.max(l0.t, l1.t);
+      if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
+        // Edge lies on fold line → only emit quads for unblocked (bendSegments) intervals
+        const t0 = l0.t, t1 = l1.t;
+        const allowed = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
+        const keep = clipIntervalByAllowed([t0, t1], allowed, epsT);
+        const denom = t1 - t0;
 
-        for (const [segT0, segT1] of fl.bendSegments) {
-          const clT0 = Math.max(segT0, edgeTMin);
-          const clT1 = Math.min(segT1, edgeTMax);
-          if (clT1 <= clT0 + 0.01) continue;
-
-          const x0 = fl.linePoint.x + fl.tangent.x * clT0;
-          const y0 = fl.linePoint.y + fl.tangent.y * clT0;
-          const x1 = fl.linePoint.x + fl.tangent.x * clT1;
-          const y1 = fl.linePoint.y + fl.tangent.y * clT1;
-          addQuad(x0, y0, x1, y1);
+        if (Math.abs(denom) < 1e-12) {
+          // Degenerate: midpoint test
+          const insideAllowed = allowed.some(([aa, bb]) =>
+            t0 >= Math.min(aa, bb) - epsT && t0 <= Math.max(aa, bb) + epsT
+          );
+          if (insideAllowed) emitSidewallEdge(p0, p1);
+        } else {
+          for (const [ka, kb] of keep) {
+            const aAlpha = clamp01((ka - t0) / denom);
+            const bAlpha = clamp01((kb - t0) / denom);
+            const P = lerp2(p0, p1, aAlpha);
+            const Q = lerp2(p0, p1, bAlpha);
+            emitSidewallEdge(P, Q);
+          }
         }
+        handledByFold = true;
         break;
       }
     }
 
-    if (!onFoldLine) {
-      addQuad(p0.x, p0.y, p1.x, p1.y);
+    if (!handledByFold) {
+      emitSidewallEdge(p0, p1);
     }
   }
 
   // ── Hole sidewalls ──
-  const HOLE_D_TOL = thickness * 1.5;
   for (const holePoly of cutoutPolygons) {
-    if (holePoly.length < 3) continue;
+    if (!holePoly || holePoly.length < 3) continue;
     for (let i = 0; i < holePoly.length; i++) {
       const j = (i + 1) % holePoly.length;
       const p0 = holePoly[i], p1 = holePoly[j];
 
-      let skip = false;
+      let emitted = false;
       for (const fl of foldLineInfos) {
         const l0 = projectToFold(p0.x, p0.y, fl);
         const l1 = projectToFold(p1.x, p1.y, fl);
 
-        if (Math.abs(l0.d) < HOLE_D_TOL && Math.abs(l1.d) < HOLE_D_TOL) {
-          const midT = (l0.t + l1.t) / 2;
-          for (const [bStart, bEnd] of fl.blocked) {
-            if (midT >= bStart - 0.5 && midT <= bEnd + 0.5) {
-              skip = true;
-              break;
+        if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
+          const t0 = l0.t, t1 = l1.t;
+
+          // Derive blocked intervals: use fl.blocked directly, or complement of bendSegments
+          let blocked = fl.blocked;
+          if (!blocked || blocked.length === 0) {
+            const b = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
+            if (b.length) {
+              const dom: [number, number] = [b[0][0], b[b.length - 1][1]];
+              blocked = complementIntervalsForBase(dom, b, epsT);
+            } else {
+              blocked = [];
             }
           }
+
+          const blockedMerged = mergeIntervalsForBase(blocked, epsT);
+          // Keep = complement of blocked within edge's t-range
+          const keep = complementIntervalsForBase(
+            [Math.min(t0, t1), Math.max(t0, t1)],
+            blockedMerged,
+            epsT
+          );
+
+          const denom = t1 - t0;
+          if (Math.abs(denom) < 1e-12) {
+            const inBlocked = blockedMerged.some(([aa, bb]) =>
+              t0 >= Math.min(aa, bb) - epsT && t0 <= Math.max(aa, bb) + epsT
+            );
+            if (!inBlocked) emitSidewallEdge(p0, p1);
+          } else {
+            for (const [ka, kb] of keep) {
+              const aAlpha = clamp01((ka - t0) / denom);
+              const bAlpha = clamp01((kb - t0) / denom);
+              const P = lerp2(p0, p1, aAlpha);
+              const Q = lerp2(p0, p1, bAlpha);
+              emitSidewallEdge(P, Q);
+            }
+          }
+          emitted = true;
+          break;
         }
-        if (skip) break;
       }
 
-      if (!skip) {
-        addQuad(p0.x, p0.y, p1.x, p1.y);
+      if (!emitted) {
+        emitSidewallEdge(p0, p1);
       }
     }
   }
 
-  // Combine face verts + sidewall verts
-  const allVerts = new Float32Array([...faceVerts, ...sidewallVerts]);
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(allVerts, 3));
-  geo.computeVertexNormals();
-  return geo;
+  // ── 4) Build final geometry ──
+  const out = mb.buildGeometry();
+  out.computeBoundingBox();
+  out.computeBoundingSphere();
+  return out;
 }
 
 /**
