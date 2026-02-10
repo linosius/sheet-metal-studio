@@ -14,6 +14,7 @@ import {
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions, FlangeTipClipLine,
   ProfileCutout, getFixedCutouts, getMovingCutouts,
+  computeFoldLineCutoutBlocked, removeSideWallsAtFoldCutouts,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -328,7 +329,26 @@ function SheetMetalMesh({
     () => cutouts && cutouts.length > 0 ? getFixedCutouts(cutouts, folds, profile, thickness) : undefined,
     [cutouts, folds, profile, thickness],
   );
-  const geometry = useMemo(() => createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons), [fixedProfile, thickness, fixedCutoutPolygons]);
+  const foldCutoutRanges = useMemo(() => {
+    if (!cutouts || cutouts.length === 0) return [];
+    const ranges: { linePoint: Point2D; tangent: Point2D; normal: Point2D; blocked: [number, number][] }[] = [];
+    const bFolds = folds.filter(f => isBaseFaceFold(f));
+    for (const fold of bFolds) {
+      const movCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
+      if (movCutouts.length === 0) continue;
+      const result = computeFoldLineCutoutBlocked(fold, profile, thickness, movCutouts);
+      if (result) ranges.push(result);
+    }
+    return ranges;
+  }, [cutouts, folds, profile, thickness]);
+
+  const geometry = useMemo(() => {
+    const geo = createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons);
+    if (foldCutoutRanges.length > 0) {
+      removeSideWallsAtFoldCutouts(geo, foldCutoutRanges);
+    }
+    return geo;
+  }, [fixedProfile, thickness, fixedCutoutPolygons, foldCutoutRanges]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
