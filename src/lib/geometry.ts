@@ -459,6 +459,102 @@ function buildBaseFaceManual(
 }
 
 /**
+ * Compute explicit boundary edge line segments for the base face.
+ * Returns a BufferGeometry with pairs of vertices forming line segments.
+ * This is deterministic — only real boundary edges are drawn, no internal triangulation.
+ */
+export function computeBoundaryEdges(
+  profile: Point2D[],
+  thickness: number,
+  cutoutPolygons?: Point2D[][],
+  foldLineInfos?: FoldLineInfoForBaseFace[],
+): THREE.BufferGeometry {
+  const verts: number[] = [];
+  const epsT = 1e-9;
+  const foldDTol = Math.max(1e-6, thickness * 0.25);
+
+  function addEdge(ax: number, ay: number, az: number, bx: number, by: number, bz: number) {
+    verts.push(ax, ay, az, bx, by, bz);
+  }
+
+  function projectToFold(px: number, py: number, fl: FoldLineInfoForBaseFace) {
+    const vx = px - fl.linePoint.x;
+    const vy = py - fl.linePoint.y;
+    return {
+      t: vx * fl.tangent.x + vy * fl.tangent.y,
+      d: vx * fl.normal.x + vy * fl.normal.y,
+    };
+  }
+
+  function emitLoopEdges(loop: Point2D[]) {
+    for (let i = 0; i < loop.length; i++) {
+      const j = (i + 1) % loop.length;
+      const p0 = loop[i], p1 = loop[j];
+
+      let handledByFold = false;
+      if (foldLineInfos && foldLineInfos.length > 0) {
+        for (const fl of foldLineInfos) {
+          const l0 = projectToFold(p0.x, p0.y, fl);
+          const l1 = projectToFold(p1.x, p1.y, fl);
+
+          if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
+            const t0 = l0.t, t1 = l1.t;
+            const allowed = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
+            const keep = clipIntervalByAllowed([t0, t1], allowed, epsT);
+            const denom = t1 - t0;
+
+            if (Math.abs(denom) < 1e-12) {
+              const insideAllowed = allowed.some(([aa, bb]) =>
+                t0 >= Math.min(aa, bb) - epsT && t0 <= Math.max(aa, bb) + epsT
+              );
+              if (insideAllowed) {
+                addEdge(p0.x, p0.y, 0, p1.x, p1.y, 0);
+                addEdge(p0.x, p0.y, thickness, p1.x, p1.y, thickness);
+                addEdge(p0.x, p0.y, 0, p0.x, p0.y, thickness);
+              }
+            } else {
+              for (const [ka, kb] of keep) {
+                const aAlpha = clamp01((ka - t0) / denom);
+                const bAlpha = clamp01((kb - t0) / denom);
+                const P = lerp2(p0, p1, aAlpha);
+                const Q = lerp2(p0, p1, bAlpha);
+                addEdge(P.x, P.y, 0, Q.x, Q.y, 0);
+                addEdge(P.x, P.y, thickness, Q.x, Q.y, thickness);
+                addEdge(P.x, P.y, 0, P.x, P.y, thickness);
+                addEdge(Q.x, Q.y, 0, Q.x, Q.y, thickness);
+              }
+            }
+            handledByFold = true;
+            break;
+          }
+        }
+      }
+
+      if (!handledByFold) {
+        addEdge(p0.x, p0.y, 0, p1.x, p1.y, 0);
+        addEdge(p0.x, p0.y, thickness, p1.x, p1.y, thickness);
+        addEdge(p0.x, p0.y, 0, p0.x, p0.y, thickness);
+      }
+    }
+  }
+
+  // Outer profile
+  emitLoopEdges(profile);
+
+  // Cutout holes
+  if (cutoutPolygons) {
+    for (const poly of cutoutPolygons) {
+      if (poly.length < 3) continue;
+      emitLoopEdges(poly);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  return geo;
+}
+
+/**
  * Create an extruded mesh from a profile and thickness, with optional polygon cutouts (holes).
  * When foldLineInfos is provided (non-empty), uses manual geometry construction
  * to avoid the steg problem. Otherwise falls back to ExtrudeGeometry.
@@ -793,7 +889,7 @@ export function createFlangeMesh(
   flange: Flange,
   thickness: number,
   childClipLines?: FlangeTipClipLine[],
-): THREE.BufferGeometry {
+): { mesh: THREE.BufferGeometry; boundaryEdges: THREE.BufferGeometry } {
   const bendAngleRad = (flange.angle * Math.PI) / 180;
   const dirSign = flange.direction === 'up' ? 1 : -1;
   const R = flange.bendRadius;
@@ -965,7 +1061,43 @@ export function createFlangeMesh(
 
   const geometry = indexed.toNonIndexed();
   geometry.computeVertexNormals();
-  return geometry;
+
+  // ── Compute explicit boundary edges ──
+  const bVerts: number[] = [];
+  function addBE(a: THREE.Vector3, b: THREE.Vector3) {
+    bVerts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+  function makeEdgePos(base: THREE.Vector3, u: number, w: number): THREE.Vector3 {
+    return base.clone().add(uDir.clone().multiplyScalar(u)).add(wDir.clone().multiplyScalar(w));
+  }
+
+  // Side profiles at edge.start and edge.end
+  for (const base of [edge.start, edge.end]) {
+    for (let i = 0; i < arcProfile.length - 1; i++) {
+      const c = arcProfile[i], n = arcProfile[i + 1];
+      addBE(makeEdgePos(base, c.iu, c.iw), makeEdgePos(base, n.iu, n.iw));
+      addBE(makeEdgePos(base, c.ou, c.ow), makeEdgePos(base, n.ou, n.ow));
+    }
+    // Base cap (inner to outer at angle=0)
+    addBE(makeEdgePos(base, arcProfile[0].iu, arcProfile[0].iw), makeEdgePos(base, arcProfile[0].ou, arcProfile[0].ow));
+  }
+
+  // Tip polygon edges on inner and outer surfaces
+  if (tipPoly.length >= 3) {
+    for (let i = 0; i < tipPoly.length; i++) {
+      const j = (i + 1) % tipPoly.length;
+      addBE(tipPointTo3D(tipPoly[i].x, tipPoly[i].y, 'inner'), tipPointTo3D(tipPoly[j].x, tipPoly[j].y, 'inner'));
+      addBE(tipPointTo3D(tipPoly[i].x, tipPoly[i].y, 'outer'), tipPointTo3D(tipPoly[j].x, tipPoly[j].y, 'outer'));
+    }
+    for (const p of tipPoly) {
+      addBE(tipPointTo3D(p.x, p.y, 'inner'), tipPointTo3D(p.x, p.y, 'outer'));
+    }
+  }
+
+  const boundaryEdges = new THREE.BufferGeometry();
+  boundaryEdges.setAttribute('position', new THREE.Float32BufferAttribute(bVerts, 3));
+
+  return { mesh: geometry, boundaryEdges };
 }
 
 // ========== Fold & Face Sketch Model ==========
@@ -1692,7 +1824,7 @@ export function createFoldMesh(
   thickness: number,
   childFolds?: Fold[],
   movingCutouts?: Point2D[][],
-): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry } | null {
+): { arc: THREE.BufferGeometry; tip: THREE.BufferGeometry; tipBoundaryEdges: THREE.BufferGeometry } | null {
   const xs = profile.map(p => p.x);
   const ys = profile.map(p => p.y);
   const minX = Math.min(...xs);
@@ -1899,6 +2031,7 @@ export function createFoldMesh(
   const tipVerts: number[] = [];
   const tipNormals: number[] = [];
   const tipIdx: number[] = [];
+  const tipBoundaryVerts: number[] = [];
   let tipVi = 0;
   function addTipV(v: THREE.Vector3, n: THREE.Vector3): number {
     tipVerts.push(v.x, v.y, v.z);
@@ -2220,6 +2353,45 @@ export function createFoldMesh(
         tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
       }
     }
+
+    // ── Tip boundary edges for this segment ──
+    for (let i = 0; i < segTipLocs.length; i++) {
+      const j = (i + 1) % segTipLocs.length;
+      if (segTipLocs[i].d < DTOL && segTipLocs[j].d < DTOL) continue;
+      const bii = tipInner(segTipLocs[i].t, segTipLocs[i].d);
+      const bij = tipInner(segTipLocs[j].t, segTipLocs[j].d);
+      const boi = tipOuter(segTipLocs[i].t, segTipLocs[i].d);
+      const boj = tipOuter(segTipLocs[j].t, segTipLocs[j].d);
+      tipBoundaryVerts.push(bii.x, bii.y, bii.z, bij.x, bij.y, bij.z);
+      tipBoundaryVerts.push(boi.x, boi.y, boi.z, boj.x, boj.y, boj.z);
+    }
+    for (const loc of segTipLocs) {
+      if (loc.d < DTOL) continue;
+      const biv = tipInner(loc.t, loc.d);
+      const bov = tipOuter(loc.t, loc.d);
+      tipBoundaryVerts.push(biv.x, biv.y, biv.z, bov.x, bov.y, bov.z);
+    }
+    for (const hPts of segTipHoles) {
+      for (let i = 0; i < hPts.length; i++) {
+        const j = (i + 1) % hPts.length;
+        if (hPts[i].y < DTOL && hPts[j].y < DTOL) continue;
+        const htI = segTaperT(hPts[i].x, hPts[i].y);
+        const htJ = segTaperT(hPts[j].x, hPts[j].y);
+        const bii = tipInner(htI, hPts[i].y);
+        const bij = tipInner(htJ, hPts[j].y);
+        const boi = tipOuter(htI, hPts[i].y);
+        const boj = tipOuter(htJ, hPts[j].y);
+        tipBoundaryVerts.push(bii.x, bii.y, bii.z, bij.x, bij.y, bij.z);
+        tipBoundaryVerts.push(boi.x, boi.y, boi.z, boj.x, boj.y, boj.z);
+      }
+      for (const hp of hPts) {
+        if (hp.y < DTOL) continue;
+        const ht = segTaperT(hp.x, hp.y);
+        const biv = tipInner(ht, hp.y);
+        const bov = tipOuter(ht, hp.y);
+        tipBoundaryVerts.push(biv.x, biv.y, biv.z, bov.x, bov.y, bov.z);
+      }
+    }
   } // end per-segment loop
 
   const arcGeo = new THREE.BufferGeometry();
@@ -2232,7 +2404,10 @@ export function createFoldMesh(
   tipGeo.setAttribute('normal', new THREE.Float32BufferAttribute(tipNormals, 3));
   tipGeo.setIndex(tipIdx);
 
-  return { arc: arcGeo, tip: tipGeo };
+  const tipBoundaryGeo = new THREE.BufferGeometry();
+  tipBoundaryGeo.setAttribute('position', new THREE.Float32BufferAttribute(tipBoundaryVerts, 3));
+
+  return { arc: arcGeo, tip: tipGeo, tipBoundaryEdges: tipBoundaryGeo };
 }
 
 /**

@@ -2,12 +2,11 @@ import { useMemo, useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
-import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Home, Bug } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
   createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
-  computeFoldBendLines,
+  computeFoldBendLines, computeBoundaryEdges,
   getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity, FaceSketchTool,
   classifySketchLineAsFold, isEdgeOnFoldLine,
@@ -18,17 +17,6 @@ import {
   computeFoldLineInfo,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
-
-function createCleanEdgesGeometry(geometry: THREE.BufferGeometry, angle = 15): THREE.EdgesGeometry {
-  const clone = geometry.clone();
-  const beforeCount = clone.attributes.position.count;
-  clone.deleteAttribute('normal');
-  if (clone.hasAttribute('uv')) clone.deleteAttribute('uv');
-  const merged = mergeVertices(clone, 1e-3);
-  console.warn('[EDGES] mergeVertices:', beforeCount, '->', merged.attributes.position.count, 'indexed:', !!merged.index);
-  merged.computeVertexNormals();
-  return new THREE.EdgesGeometry(merged, angle);
-}
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -71,13 +59,12 @@ function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceC
     });
   }, [childFolds, edge, flange.height]);
 
-  const geometry = useMemo(() => createFlangeMesh(edge, flange, thickness, clipLines), [edge, flange, thickness, clipLines]);
+  const flangeResult = useMemo(() => createFlangeMesh(edge, flange, thickness, clipLines), [edge, flange, thickness, clipLines]);
+  const geometry = flangeResult.mesh;
   const edgesGeo = useMemo(() => {
-    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) {
-      return null;
-    }
-    return createCleanEdgesGeometry(geometry);
-  }, [geometry]);
+    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) return null;
+    return flangeResult.boundaryEdges;
+  }, [flangeResult, geometry]);
   const bendLines = useMemo(() => {
     const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
     const toTuples = (pts: THREE.Vector3[]) =>
@@ -153,10 +140,8 @@ function FoldMesh({
   );
 
   const tipEdgesGeo = useMemo(() => {
-    if (!result?.tip || !result.tip.attributes.position || result.tip.attributes.position.count === 0) {
-      return null;
-    }
-    return createCleanEdgesGeometry(result.tip);
+    if (!result?.tipBoundaryEdges) return null;
+    return result.tipBoundaryEdges;
   }, [result]);
 
   const bendLines = useMemo(() => {
@@ -361,9 +346,10 @@ function SheetMetalMesh({
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
   );
-  const edgesGeometry = useMemo(() => {
-    return createCleanEdgesGeometry(geometry);
-  }, [geometry]);
+  const edgesGeometry = useMemo(
+    () => computeBoundaryEdges(fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos.length > 0 ? foldLineInfos : undefined),
+    [fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos],
+  );
 
   const edgeMap = useMemo(() => {
     const map = new Map<string, PartEdge>();
@@ -997,33 +983,14 @@ export function Viewer3D({
     lines.push(`Folds: ${(folds || []).length}`);
     lines.push('');
 
-    // Base face geometry
     const fixedProf = getFixedProfile(profile, folds || [], thickness);
     const baseGeo = createBaseFaceMesh(fixedProf, thickness);
+    const baseBoundary = computeBoundaryEdges(fixedProf, thickness);
     lines.push('--- BASE FACE ---');
-    lines.push(`  position count: ${baseGeo.attributes.position.count}`);
-    lines.push(`  indexed: ${!!baseGeo.index}`);
-    lines.push(`  has normal: ${baseGeo.hasAttribute('normal')}`);
-    lines.push(`  has uv: ${baseGeo.hasAttribute('uv')}`);
-
-    // Test merge
-    const baseClone = baseGeo.clone();
-    baseClone.deleteAttribute('normal');
-    if (baseClone.hasAttribute('uv')) baseClone.deleteAttribute('uv');
-    const baseMerged = mergeVertices(baseClone, 1e-3);
-    lines.push(`  after deleteAttr+merge: ${baseMerged.attributes.position.count} (indexed: ${!!baseMerged.index})`);
-    const baseEdges = new THREE.EdgesGeometry(baseMerged, 15);
-    lines.push(`  EdgesGeometry segments: ${baseEdges.attributes.position.count / 2}`);
-
-    // Without deleting normals (old approach)
-    const baseClone2 = baseGeo.clone();
-    const baseMerged2 = mergeVertices(baseClone2, 1e-3);
-    lines.push(`  merge WITHOUT deleting normals: ${baseMerged2.attributes.position.count} (indexed: ${!!baseMerged2.index})`);
-    const baseEdges2 = new THREE.EdgesGeometry(baseMerged2, 15);
-    lines.push(`  EdgesGeometry segments (old): ${baseEdges2.attributes.position.count / 2}`);
+    lines.push(`  mesh positions: ${baseGeo.attributes.position.count}`);
+    lines.push(`  boundary edge segments: ${baseBoundary.attributes.position.count / 2}`);
     lines.push('');
 
-    // Each flange
     const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds || []);
     const edgeMap = new Map<string, PartEdge>();
     allEdges.forEach(e => edgeMap.set(e.id, e));
@@ -1031,39 +998,21 @@ export function Viewer3D({
     flanges.forEach(flange => {
       const edge = edgeMap.get(flange.edgeId);
       if (!edge) { lines.push(`--- FLANGE ${flange.id}: edge not found ---`); return; }
-      const geo = createFlangeMesh(edge, flange, thickness);
+      const result = createFlangeMesh(edge, flange, thickness);
       lines.push(`--- FLANGE ${flange.id} ---`);
-      lines.push(`  position count: ${geo.attributes.position.count}`);
-      lines.push(`  indexed: ${!!geo.index}`);
-      lines.push(`  has normal: ${geo.hasAttribute('normal')}`);
-      const fClone = geo.clone();
-      fClone.deleteAttribute('normal');
-      if (fClone.hasAttribute('uv')) fClone.deleteAttribute('uv');
-      const fMerged = mergeVertices(fClone, 1e-3);
-      lines.push(`  after merge: ${fMerged.attributes.position.count} (indexed: ${!!fMerged.index})`);
-      const fEdges = new THREE.EdgesGeometry(fMerged, 15);
-      lines.push(`  EdgesGeometry segments: ${fEdges.attributes.position.count / 2}`);
+      lines.push(`  mesh positions: ${result.mesh.attributes.position.count}`);
+      lines.push(`  boundary edge segments: ${result.boundaryEdges.attributes.position.count / 2}`);
     });
     lines.push('');
 
-    // Each fold
     const baseFoldsArr = (folds || []).filter(f => isBaseFaceFold(f));
     baseFoldsArr.forEach((fold, i) => {
       const result = createFoldMesh(profile, fold, baseFoldsArr.filter((_, j) => j !== i), thickness);
       lines.push(`--- FOLD ${fold.id} ---`);
       if (!result) { lines.push('  result: null'); return; }
-      lines.push(`  arc position count: ${result.arc.attributes.position.count}`);
-      lines.push(`  arc indexed: ${!!result.arc.index}`);
-      lines.push(`  tip position count: ${result.tip.attributes.position.count}`);
-      lines.push(`  tip indexed: ${!!result.tip.index}`);
-      lines.push(`  tip has normal: ${result.tip.hasAttribute('normal')}`);
-      const tClone = result.tip.clone();
-      tClone.deleteAttribute('normal');
-      if (tClone.hasAttribute('uv')) tClone.deleteAttribute('uv');
-      const tMerged = mergeVertices(tClone, 1e-3);
-      lines.push(`  tip after merge: ${tMerged.attributes.position.count} (indexed: ${!!tMerged.index})`);
-      const tEdges = new THREE.EdgesGeometry(tMerged, 15);
-      lines.push(`  tip EdgesGeometry segments: ${tEdges.attributes.position.count / 2}`);
+      lines.push(`  arc positions: ${result.arc.attributes.position.count}`);
+      lines.push(`  tip positions: ${result.tip.attributes.position.count}`);
+      lines.push(`  tip boundary edge segments: ${result.tipBoundaryEdges.attributes.position.count / 2}`);
     });
 
     const output = lines.join('\n');

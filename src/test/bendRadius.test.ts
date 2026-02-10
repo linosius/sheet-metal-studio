@@ -34,8 +34,10 @@ describe('Bend radius in geometry', () => {
     const smallR = makeFlange({ bendRadius: 2 });
     const largeR = makeFlange({ bendRadius: 10 });
 
-    const geoSmall = createFlangeMesh(edge, smallR, thickness);
-    const geoLarge = createFlangeMesh(edge, largeR, thickness);
+    const resultSmall = createFlangeMesh(edge, smallR, thickness);
+    const resultLarge = createFlangeMesh(edge, largeR, thickness);
+    const geoSmall = resultSmall.mesh;
+    const geoLarge = resultLarge.mesh;
 
     // They should produce different geometry (different bounding boxes)
     geoSmall.computeBoundingBox();
