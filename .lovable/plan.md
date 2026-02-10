@@ -1,70 +1,79 @@
 
 
-## Fix: Cutout Material Remaining in Bend Zone
+## Fix: Replace Tip Earcut with Grid-Based Triangulation
 
-### Root Cause Analysis
+### Root Cause
 
-After tracing through the entire rendering pipeline, I found **two distinct issues** causing material to remain visible inside the circular cutout at the bend zone:
+The arc grid IS working correctly (792 of 960 cells skipped). The visible material inside the cutout at the bend zone comes from the **tip (flange face) geometry**, which still uses `THREE.ShapeGeometry` (earcut triangulation).
 
-**Issue 1: TIP geometry earcut failure (PRIMARY CAUSE)**
+When the cutout semicircle has its flat edge at `d=0.01` (the epsilon-inset fold line) and spans nearly the full width of the outer polygon, earcut produces **incorrect triangles** that fill the hole. These triangles at `d ~ 0` map to 3D positions at `theta = A` (the arc/tip junction), creating the visible curved strip of material.
 
-The tip (flat flange face) geometry at lines 1653-1676 uses `THREE.ShapeGeometry` (earcut triangulation) with the cutout hole added as a `THREE.Path`. The cutout hole boundary has vertices at `d=0` (the fold line), which is ALSO where the tip's outer polygon boundary lies. When hole edges coincide with the outer shape boundary, **earcut triangulation fails silently**, producing incorrect triangles that fill part of the hole.
-
-These invalid triangles map to 3D positions at the arc-flange junction (theta=A), creating the visible curved strip of material inside the cutout at the bend zone.
-
-**Issue 2: Arc grid may need validation**
-
-The grid-based arc approach (lines 1470-1557) appears algorithmically correct, but I want to add validation to confirm cells are actually being skipped at runtime.
+This is fundamentally the same topology problem identified: the tip's outer boundary at `d=0` is continuous across the cutout, and earcut cannot reliably handle a hole that nearly coincides with the outer boundary across its full width.
 
 ### Solution
 
-**Part 1 - Fix tip geometry (main fix):**
-Replace the `THREE.ShapeGeometry`-based triangulation of the tip with a grid-based approach (same as the arc), OR clip the hole polygon to avoid touching the outer boundary at `d=0` by insetting with a small epsilon, AND clip the movPoly's `d=0` boundary to `d=epsilon` as well so they don't share vertices.
-
-The simpler and more robust approach: **clip the tip cutout holes to d >= epsilon** (e.g., `epsilon = 0.01`). This prevents the earcut boundary collision. The missing thin strip (0.01mm) is invisible.
-
-**Part 2 - Ensure arc grid is working:**
-Add a temporary triangle-count log to verify the grid is actually skipping cells. Remove debug logs once confirmed.
-
-**Part 3 - Clean up dead code:**
-Remove the unused `arcShape` / `arcOutlinePts` code (lines 1392-1414) that was left over from the old ShapeGeometry-based arc approach.
+Replace the tip's `THREE.ShapeGeometry` (earcut) with a **manual grid-based triangulation** -- the same approach that already works for the arc. This completely eliminates earcut from the fold mesh pipeline.
 
 ### Technical Changes
 
-**File: `src/lib/geometry.ts`**
+**File: `src/lib/geometry.ts`** -- Tip geometry section (lines ~1627-1690)
 
-1. **Lines ~1662-1676 (tip cutout holes):** Before adding cutout holes to `tipShape`, clip each hole's vertices to `d >= EPS` (0.01). This prevents the hole boundary from touching the outer shape boundary at `d=0`:
+Replace the ShapeGeometry-based tip with:
+
+1. **Compute bounding box** of `movPoly` in `(t, d)` local space to get `[tMinTip, tMaxTip]` and `[dMin, dMax]`.
+
+2. **Create a grid** with `GRID_T_TIP` (e.g., 40) cells along `t` and `GRID_D_TIP` (e.g., 40) cells along `d`.
+
+3. **For each grid vertex**, compute `(t, d)` and map to 3D using `tipInner(t, d)` / `tipOuter(t, d)`.
+
+4. **For each grid cell**, test the center point:
+   - Is it inside `movPoly` (the outer polygon in t,d space)? If no, skip.
+   - Is it inside any cutout polygon (in t,d space)? If yes, skip.
+   - Otherwise, emit two triangles for inner surface, two for outer surface.
+
+5. **Side walls**: Keep the existing side wall generation for the outer polygon boundary and hole boundaries.
+
+6. **Remove** the `THREE.ShapeGeometry` / earcut code entirely for the tip.
+
+### Pseudocode
 
 ```text
-const TIP_HOLE_EPS = 0.01;
-for (const cutPoly of movingCutouts) {
-  const cutLocs = cutPoly.map(p => toLocal(p));
-  if (cutLocs.length < 3) continue;
-  // Clip hole to d >= EPS to avoid earcut failure when hole touches outer boundary
-  const clippedLocs = cutLocs.map(l => ({
-    t: l.t,
-    d: Math.max(l.d, TIP_HOLE_EPS)
-  }));
-  const holePath = new THREE.Path();
-  holePath.moveTo(clippedLocs[0].t, clippedLocs[0].d);
-  for (let i = 1; i < clippedLocs.length; i++) {
-    holePath.lineTo(clippedLocs[i].t, clippedLocs[i].d);
-  }
-  holePath.closePath();
-  tipShape.holes.push(holePath);
-  holeLocs.push(cutLocs); // keep original for side walls
-}
+// Grid bounds from movPoly
+tMinTip = min(locs.t), tMaxTip = max(locs.t)
+dMinTip = 0, dMaxTip = max(locs.d)
+
+GRID_T_TIP = 40
+GRID_D_TIP = 40
+
+// Build vertex grid
+for it = 0..GRID_T_TIP:
+  for id = 0..GRID_D_TIP:
+    t = tMinTip + (tMaxTip - tMinTip) * it / GRID_T_TIP
+    d = dMinTip + (dMaxTip - dMinTip) * id / GRID_D_TIP
+    // Apply fold-line tapering for vertices near d=0
+    tTapered = taperT(t, d)
+    vertex = tipInner(tTapered, d)
+    store vertex index
+
+// Build triangles with cell-level hole testing
+for it = 0..GRID_T_TIP-1:
+  for id = 0..GRID_D_TIP-1:
+    tc, dc = cell center
+    if not pointInPolygon(tc, dc, movPolyLocs): continue  // outside face
+    if pointInPolygon(tc, dc, cutoutLocs): continue       // inside hole
+    emit triangles from 4 corner vertices
 ```
 
-2. **Lines ~1392-1414 (dead code):** Remove the unused `arcOutlinePts` and `arcShape` construction that was left from the old ShapeGeometry arc approach.
+### Benefits
 
-3. **Lines ~1416-1448 (debug logs):** Remove all `console.log('[ARC-DEBUG]...')` statements.
+- **No earcut dependency** -- immune to boundary-touching holes
+- **Consistent approach** -- same grid logic as the arc, proven to work
+- **Clean topology** -- cells inside holes are simply never created, providing true topological separation
+- **No epsilon hacks** -- no need for `TIP_HOLE_EPS` insets
 
-4. **Tip side walls at d=0 (lines 1711-1731):** The side wall strip at `d < DTOL` is already skipped (`if (tipLocs[i].d < DTOL && tipLocs[j].d < DTOL) continue`), so the fold-line boundary wall is correctly omitted. However, the HOLE side walls (lines 1734-1751) need to also handle the `d=0` boundary properly -- for hole vertices at `d=0`, the hole wall should connect to the arc geometry rather than creating a separate wall at the tip position.
+### Cleanup
 
-### Why Previous Attempts Failed
-
-- **ShapeGeometry with holes:** Failed because earcut cannot triangulate when hole vertices touch the outer boundary.
-- **Epsilon inset on the arc:** Fixed the arc side but missed the tip geometry, which has the same earcut problem.
-- **Grid-based arc:** Correctly solves the arc, but the tip still uses earcut with the boundary-touching hole, creating the visible artifact.
-
+- Remove `TIP_HOLE_EPS` constant and epsilon-clamping logic
+- Remove `THREE.ShapeGeometry` creation and disposal
+- Remove the `[ARC-HOLE]` debug console.log statements
+- Keep hole side wall generation (adjusted to use cutout polygons in `(t,d)` space)
