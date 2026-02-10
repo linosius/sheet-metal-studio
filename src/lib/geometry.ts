@@ -1415,6 +1415,8 @@ export function createFoldMesh(
       arcHoleLocs.push(clippedArcCut);
     }
   }
+  console.log('[ARC-HOLE] movingCutouts:', movingCutouts?.length ?? 0, 'arcHoleLocs:', arcHoleLocs.length,
+    arcHoleLocs.length > 0 ? 'poly0 vertices:' + arcHoleLocs[0].length : '');
 
   // Point-in-polygon test (ray casting)
   function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
@@ -1432,6 +1434,28 @@ export function createFoldMesh(
   function isInsideAnyHole(t: number, theta: number): boolean {
     for (const hole of arcHoleLocs) {
       if (pointInPolygon(t, theta, hole)) return true;
+    }
+    return false;
+  }
+
+  /** Check if a grid cell overlaps any hole — tests center + all 4 corners */
+  function cellOverlapsHole(it: number, ia: number): boolean {
+    if (arcHoleLocs.length === 0) return false;
+    // Compute 5 sample points for this cell
+    const samples = [
+      { itF: it + 0.5, iaF: ia + 0.5 },   // center
+      { itF: it, iaF: ia },                 // corner 00
+      { itF: it + 1, iaF: ia },             // corner 10
+      { itF: it, iaF: ia + 1 },             // corner 01
+      { itF: it + 1, iaF: ia + 1 },         // corner 11
+    ];
+    for (const s of samples) {
+      const theta = A * (s.iaF / GRID_THETA);
+      const d_eq = BA_taper * (s.iaF / GRID_THETA);
+      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
+      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
+      const t = tL + (tR - tL) * (s.itF / GRID_T);
+      if (isInsideAnyHole(t, theta)) return true;
     }
     return false;
   }
@@ -1460,21 +1484,11 @@ export function createFoldMesh(
     }
   }
 
-  // Build inner triangles, skipping cells where center is inside a cutout
+  // Build inner triangles, skipping cells that overlap any cutout
+  let skippedCells = 0;
   for (let it = 0; it < GRID_T; it++) {
     for (let ia = 0; ia < GRID_THETA; ia++) {
-      // Compute cell center in (t, θ) space
-      const theta0 = A * (ia / GRID_THETA);
-      const theta1 = A * ((ia + 1) / GRID_THETA);
-      const thetaC = (theta0 + theta1) / 2;
-      const d_eq0 = BA_taper * (ia / GRID_THETA);
-      const d_eq1 = BA_taper * ((ia + 1) / GRID_THETA);
-      const d_eqC = (d_eq0 + d_eq1) / 2;
-      const tLC = tMin + leftSlope * Math.min(d_eqC, leftAdjD);
-      const tRC = tMax + rightSlope * Math.min(d_eqC, rightAdjD);
-      const tC = tLC + (tRC - tLC) * ((it + 0.5) / GRID_T);
-
-      if (arcHoleLocs.length > 0 && isInsideAnyHole(tC, thetaC)) continue;
+      if (cellOverlapsHole(it, ia)) { skippedCells++; continue; }
 
       const v00 = innerVIdx[it][ia];
       const v10 = innerVIdx[it + 1][ia];
@@ -1505,17 +1519,7 @@ export function createFoldMesh(
   // Build outer triangles (reversed winding), same hole skipping
   for (let it = 0; it < GRID_T; it++) {
     for (let ia = 0; ia < GRID_THETA; ia++) {
-      const theta0 = A * (ia / GRID_THETA);
-      const theta1 = A * ((ia + 1) / GRID_THETA);
-      const thetaC = (theta0 + theta1) / 2;
-      const d_eq0 = BA_taper * (ia / GRID_THETA);
-      const d_eq1 = BA_taper * ((ia + 1) / GRID_THETA);
-      const d_eqC = (d_eq0 + d_eq1) / 2;
-      const tLC = tMin + leftSlope * Math.min(d_eqC, leftAdjD);
-      const tRC = tMax + rightSlope * Math.min(d_eqC, rightAdjD);
-      const tC = tLC + (tRC - tLC) * ((it + 0.5) / GRID_T);
-
-      if (arcHoleLocs.length > 0 && isInsideAnyHole(tC, thetaC)) continue;
+      if (cellOverlapsHole(it, ia)) continue;
 
       const v00 = outerVIdx[it][ia];
       const v10 = outerVIdx[it + 1][ia];
@@ -1524,6 +1528,7 @@ export function createFoldMesh(
       arcIdx.push(v00, v11, v10, v00, v01, v11);
     }
   }
+  if (skippedCells > 0) console.log('[ARC-HOLE] skipped', skippedCells, 'inner cells');
 
   // Left side surface — connecting inner to outer along left boundary
   for (let i = 0; i < ARC_N; i++) {
