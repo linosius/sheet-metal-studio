@@ -14,7 +14,7 @@ import {
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions, FlangeTipClipLine,
   ProfileCutout, getFixedCutouts, getMovingCutouts,
-  computeFoldLineInfo, removeAllFoldEdgeSidewalls, buildFoldEdgeSidewalls,
+  computeFoldLineInfo,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
@@ -342,20 +342,9 @@ function SheetMetalMesh({
   }, [cutouts, folds, profile, thickness]);
 
   const geometry = useMemo(() => {
-    const geo = createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons);
-    if (foldLineInfos.length > 0) {
-      // Remove ALL extrude sidewalls along fold edges, then add segmented ones back
-      removeAllFoldEdgeSidewalls(geo, foldLineInfos.filter(Boolean) as NonNullable<typeof foldLineInfos[0]>[]);
-    }
-    return geo;
+    const validInfos = foldLineInfos.filter(Boolean) as NonNullable<typeof foldLineInfos[0]>[];
+    return createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons, validInfos.length > 0 ? validInfos : undefined);
   }, [fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
-
-  // Build segmented sidewall geometries for fold edges (replaces removed extrude sidewalls)
-  const foldSidewallGeos = useMemo(() => {
-    return foldLineInfos
-      .filter(Boolean)
-      .map(info => buildFoldEdgeSidewalls(info!, thickness));
-  }, [foldLineInfos, thickness]);
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
@@ -480,15 +469,7 @@ function SheetMetalMesh({
         />
       </mesh>
 
-      {/* Segmented fold-edge sidewalls (replaces removed extrude sidewalls) */}
-      {foldSidewallGeos.map((geo, i) => (
-        <mesh key={`fold-sidewall-${i}`} geometry={geo}>
-          <meshStandardMaterial
-            color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#bcc2c8'}
-            metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
-          />
-        </mesh>
-      ))}
+      {/* Fold-edge sidewalls are now built directly inside createBaseFaceMesh */}
 
       {!isViewMode && !isEdgeMode && (
         <lineSegments geometry={edgesGeometry}>
