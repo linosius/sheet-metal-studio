@@ -341,6 +341,7 @@ function buildBaseFaceManual(
   }
 
   // ── Outer profile sidewalls ──
+  let outerFoldNearCount = 0;
   for (let i = 0; i < profile.length; i++) {
     const j = (i + 1) % profile.length;
     const p0 = profile[i], p1 = profile[j];
@@ -351,6 +352,7 @@ function buildBaseFaceManual(
       const l1 = projectToFold(p1.x, p1.y, fl);
 
       if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
+        outerFoldNearCount++;
         // Edge lies on fold line → only emit quads for unblocked (bendSegments) intervals
         const t0 = l0.t, t1 = l1.t;
         const allowed = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
@@ -381,13 +383,17 @@ function buildBaseFaceManual(
       emitSidewallEdge(p0, p1);
     }
   }
+  console.warn("[BASE] outer edges", { total: profile.length, foldNear: outerFoldNearCount, foldDTol, foldLines: foldLineInfos.length });
 
   // ── Hole sidewalls ──
+  let totalHoleEdges = 0;
+  let holeFoldNearCount = 0;
   for (const holePoly of cutoutPolygons) {
     if (!holePoly || holePoly.length < 3) continue;
     for (let i = 0; i < holePoly.length; i++) {
       const j = (i + 1) % holePoly.length;
       const p0 = holePoly[i], p1 = holePoly[j];
+      totalHoleEdges++;
 
       let emitted = false;
       for (const fl of foldLineInfos) {
@@ -395,6 +401,7 @@ function buildBaseFaceManual(
         const l1 = projectToFold(p1.x, p1.y, fl);
 
         if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
+          holeFoldNearCount++;
           const t0 = l0.t, t1 = l1.t;
 
           // Derive blocked intervals: use fl.blocked directly, or complement of bendSegments
@@ -442,6 +449,7 @@ function buildBaseFaceManual(
       }
     }
   }
+  console.warn("[BASE] hole edges", { total: totalHoleEdges, foldNear: holeFoldNearCount });
 
   // ── 4) Build final geometry ──
   const out = mb.buildGeometry();

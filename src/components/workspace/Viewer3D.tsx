@@ -2,6 +2,7 @@ import { useMemo, useRef, useEffect, useState } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Home } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
@@ -349,7 +350,11 @@ function SheetMetalMesh({
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
   );
-  const edgesGeometry = useMemo(() => new THREE.EdgesGeometry(geometry, 15), [geometry]);
+  const edgesGeometry = useMemo(() => {
+    const merged = mergeVertices(geometry.clone(), 1e-4);
+    merged.computeVertexNormals();
+    return new THREE.EdgesGeometry(merged, 15);
+  }, [geometry]);
 
   const edgeMap = useMemo(() => {
     const map = new Map<string, PartEdge>();
