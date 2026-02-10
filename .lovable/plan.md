@@ -1,95 +1,40 @@
 
-# Fix: Replace EdgesGeometry with Explicit Boundary Edge Rendering
+# Fix: Remove Overlapping Geometry at Fold Junction
 
 ## Problem
-`THREE.EdgesGeometry` combined with `mergeVertices` is unreliable for hiding internal triangulation lines on complex geometries (e.g., faces with circular holes). The hash-grid vertex merging has boundary edge cases, and angle-based edge detection fails with numerical precision issues. This has been attempted multiple times with different merge strategies, none of which work consistently.
+The visible stripe at the fold-base junction is caused by **double geometry**: both the base face and the arc generate surfaces and boundary edge lines at the exact same location (the fold line at ang=0).
+
+Specifically:
+- `buildBaseFaceManual` emits sidewall quads for bend-segment intervals on the fold line
+- The arc's side walls (left/right) at ang=0 cover the same area
+- `computeBoundaryEdges` emits top/bottom/vertical edge lines at the fold line
+- Arc boundary edges also emit inner-to-outer connectors at ang=0
+
+Both create coplanar surfaces and doubled edge lines = visible stripe.
 
 ## Solution
-**Bypass EdgesGeometry entirely.** Instead, compute boundary edges directly from the known polygon outlines and render them as explicit line segments. This is deterministic -- only real boundary edges are drawn, and internal triangulation is never exposed.
 
-## Changes
+Two targeted changes in `src/lib/geometry.ts`:
 
-### 1. New helper: `computeBoundaryEdges` (in `src/lib/geometry.ts`)
+### 1. Remove base face sidewalls at fold lines
 
-Create a function that generates a `THREE.BufferGeometry` containing only boundary line segments for a given profile and optional cutout polygons:
+In `buildBaseFaceManual` (around line 356): change the fold-line sidewall logic to **NOT** emit sidewalls for bend-segment intervals. The arc provides this closure. Only emit sidewalls for the GAPS (blocked intervals where cutouts cross the fold line).
 
-```text
-Input: profile polygon, thickness, cutout polygons (optional)
-Output: BufferGeometry of line segments (pairs of vertices)
+Current logic: `keep = clipIntervalByAllowed([t0,t1], bendSegments)` then emit quads for `keep`.
+New logic: **Skip sidewall emission entirely** for edges on fold lines where bend segments exist. The arc's side walls + base cap handle this boundary.
 
-Logic:
-- For each edge of the profile: emit line at z=0 and z=thickness
-- For each edge of each cutout: emit line at z=0 and z=thickness  
-- For each vertex of the profile: emit vertical line from z=0 to z=thickness
-- For each vertex of each cutout: emit vertical line from z=0 to z=thickness
-```
+### 2. Remove base face boundary edges at fold lines
 
-### 2. Extend `createFoldMesh` return type (in `src/lib/geometry.ts`)
+In `computeBoundaryEdges` (around line 500): for edges on fold lines, **do NOT emit** top/bottom/vertical boundary edge lines for the bend-segment intervals. The arc boundary edges already cover this junction.
 
-Add `tipBoundaryEdges: THREE.BufferGeometry` to the return object. This contains line segments computed from the tip polygon boundaries (segTipPoly + holes), mapped through `tipInner`/`tipOuter`, plus connecting vertical edges.
-
-### 3. Extend `createFlangeMesh` return type (in `src/lib/geometry.ts`)
-
-Change from returning a single `BufferGeometry` to returning `{ mesh: BufferGeometry, boundaryEdges: BufferGeometry }`. The boundary edges come from the tipPoly outline + arc cross-section boundary.
-
-### 4. Update `SheetMetalMesh` (in `src/components/workspace/Viewer3D.tsx`)
-
-Replace:
-```
-const edgesGeometry = useMemo(() => createCleanEdgesGeometry(geometry), [geometry]);
-```
-With:
-```
-const edgesGeometry = useMemo(() => computeBoundaryEdges(fixedProfile, thickness, fixedCutoutPolygons), [...]);
-```
-
-### 5. Update `FoldMesh` (in `src/components/workspace/Viewer3D.tsx`)
-
-Replace `createCleanEdgesGeometry(result.tip)` with `result.tipBoundaryEdges`.
-
-### 6. Update `FlangeMesh` (in `src/components/workspace/Viewer3D.tsx`)
-
-Use the returned `boundaryEdges` geometry instead of `createCleanEdgesGeometry(geometry)`.
-
-### 7. Remove `createCleanEdgesGeometry` function
-
-No longer needed once all edge rendering uses explicit boundaries.
-
-## Technical Details
-
-### Base face boundary edges
-```text
-For profile with N vertices and M cutouts:
-- Top outline: N line segments at z=thickness
-- Bottom outline: N line segments at z=0
-- Vertical edges: N line segments connecting z=0 to z=thickness
-- Per cutout: same pattern (top + bottom + vertical)
-- Fold-aware: skip profile edges on fold lines (same logic as sidewall clipping)
-```
-
-### Fold tip boundary edges
-```text
-Per bend segment:
-- Inner surface: segTipPoly outline mapped through tipInner()
-- Outer surface: segTipPoly outline mapped through tipOuter()
-- Connecting edges at each polygon vertex (tipInner to tipOuter)
-- Skip edges at d=0 (bend line boundary, handled by bend line rendering)
-- Interior holes: same inner/outer/connecting pattern
-```
-
-### Flange boundary edges
-```text
-- Arc cross-section at start and end of edge (inner+outer profile curves)
-- Tip polygon outline mapped through tipPointTo3D for inner and outer
-- Connecting vertical edges between inner and outer at polygon corners
-```
-
-## Why This Works
-- Only real geometric boundaries are rendered -- no reliance on triangulation detection
-- Polygon outlines are already known (profile, cutouts, tipPoly) -- no geometry analysis needed
-- Completely deterministic -- same polygon = same edges, always
-- No dependency on mergeVertices, hash grids, or angle thresholds
+Current logic: emit `addEdge` for each `keep` interval on fold edges.
+New logic: Skip boundary edge emission for fold-line edges entirely (the arc boundary edges at ang=0 already draw the connecting lines there).
 
 ## Files Changed
-- `src/lib/geometry.ts`: Add `computeBoundaryEdges`, modify `createFoldMesh` and `createFlangeMesh` return types
-- `src/components/workspace/Viewer3D.tsx`: Update edge rendering in SheetMetalMesh, FoldMesh, FlangeMesh; remove `createCleanEdgesGeometry`
+- `src/lib/geometry.ts`: Modify fold-line handling in both `buildBaseFaceManual` and `computeBoundaryEdges` to skip emission where the arc provides coverage.
+
+## Why This Works
+- Removes the only source of coplanar double-geometry at the fold junction
+- Arc's left/right side walls already close the volume at the fold line boundary
+- Arc's boundary edges at ang=0 already draw the inner-to-outer connectors
+- No new geometry needed — just stop generating duplicate geometry
