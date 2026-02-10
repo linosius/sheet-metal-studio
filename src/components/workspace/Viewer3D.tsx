@@ -3,7 +3,7 @@ import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { Home } from 'lucide-react';
+import { Home, Bug } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
   createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
@@ -986,6 +986,90 @@ export function Viewer3D({
   cameraApiRef,
 }: Viewer3DProps) {
   const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>({ reset: () => {}, setFrontalView: () => {}, setViewToFace: () => {} });
+  const [debugInfo, setDebugInfo] = useState<string | null>(null);
+
+  const runGeometryDebug = () => {
+    const lines: string[] = [];
+    lines.push('=== GEOMETRY DEBUG ===');
+    lines.push(`Profile vertices: ${profile.length}`);
+    lines.push(`Thickness: ${thickness}`);
+    lines.push(`Flanges: ${flanges.length}`);
+    lines.push(`Folds: ${(folds || []).length}`);
+    lines.push('');
+
+    // Base face geometry
+    const fixedProf = getFixedProfile(profile, folds || [], thickness);
+    const baseGeo = createBaseFaceMesh(fixedProf, thickness);
+    lines.push('--- BASE FACE ---');
+    lines.push(`  position count: ${baseGeo.attributes.position.count}`);
+    lines.push(`  indexed: ${!!baseGeo.index}`);
+    lines.push(`  has normal: ${baseGeo.hasAttribute('normal')}`);
+    lines.push(`  has uv: ${baseGeo.hasAttribute('uv')}`);
+
+    // Test merge
+    const baseClone = baseGeo.clone();
+    baseClone.deleteAttribute('normal');
+    if (baseClone.hasAttribute('uv')) baseClone.deleteAttribute('uv');
+    const baseMerged = mergeVertices(baseClone, 1e-3);
+    lines.push(`  after deleteAttr+merge: ${baseMerged.attributes.position.count} (indexed: ${!!baseMerged.index})`);
+    const baseEdges = new THREE.EdgesGeometry(baseMerged, 15);
+    lines.push(`  EdgesGeometry segments: ${baseEdges.attributes.position.count / 2}`);
+
+    // Without deleting normals (old approach)
+    const baseClone2 = baseGeo.clone();
+    const baseMerged2 = mergeVertices(baseClone2, 1e-3);
+    lines.push(`  merge WITHOUT deleting normals: ${baseMerged2.attributes.position.count} (indexed: ${!!baseMerged2.index})`);
+    const baseEdges2 = new THREE.EdgesGeometry(baseMerged2, 15);
+    lines.push(`  EdgesGeometry segments (old): ${baseEdges2.attributes.position.count / 2}`);
+    lines.push('');
+
+    // Each flange
+    const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds || []);
+    const edgeMap = new Map<string, PartEdge>();
+    allEdges.forEach(e => edgeMap.set(e.id, e));
+
+    flanges.forEach(flange => {
+      const edge = edgeMap.get(flange.edgeId);
+      if (!edge) { lines.push(`--- FLANGE ${flange.id}: edge not found ---`); return; }
+      const geo = createFlangeMesh(edge, flange, thickness);
+      lines.push(`--- FLANGE ${flange.id} ---`);
+      lines.push(`  position count: ${geo.attributes.position.count}`);
+      lines.push(`  indexed: ${!!geo.index}`);
+      lines.push(`  has normal: ${geo.hasAttribute('normal')}`);
+      const fClone = geo.clone();
+      fClone.deleteAttribute('normal');
+      if (fClone.hasAttribute('uv')) fClone.deleteAttribute('uv');
+      const fMerged = mergeVertices(fClone, 1e-3);
+      lines.push(`  after merge: ${fMerged.attributes.position.count} (indexed: ${!!fMerged.index})`);
+      const fEdges = new THREE.EdgesGeometry(fMerged, 15);
+      lines.push(`  EdgesGeometry segments: ${fEdges.attributes.position.count / 2}`);
+    });
+    lines.push('');
+
+    // Each fold
+    const baseFoldsArr = (folds || []).filter(f => isBaseFaceFold(f));
+    baseFoldsArr.forEach((fold, i) => {
+      const result = createFoldMesh(profile, fold, baseFoldsArr.filter((_, j) => j !== i), thickness);
+      lines.push(`--- FOLD ${fold.id} ---`);
+      if (!result) { lines.push('  result: null'); return; }
+      lines.push(`  arc position count: ${result.arc.attributes.position.count}`);
+      lines.push(`  arc indexed: ${!!result.arc.index}`);
+      lines.push(`  tip position count: ${result.tip.attributes.position.count}`);
+      lines.push(`  tip indexed: ${!!result.tip.index}`);
+      lines.push(`  tip has normal: ${result.tip.hasAttribute('normal')}`);
+      const tClone = result.tip.clone();
+      tClone.deleteAttribute('normal');
+      if (tClone.hasAttribute('uv')) tClone.deleteAttribute('uv');
+      const tMerged = mergeVertices(tClone, 1e-3);
+      lines.push(`  tip after merge: ${tMerged.attributes.position.count} (indexed: ${!!tMerged.index})`);
+      const tEdges = new THREE.EdgesGeometry(tMerged, 15);
+      lines.push(`  tip EdgesGeometry segments: ${tEdges.attributes.position.count / 2}`);
+    });
+
+    const output = lines.join('\n');
+    console.log(output);
+    setDebugInfo(output);
+  };
 
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
@@ -1194,6 +1278,24 @@ export function Viewer3D({
       >
         <Home className="h-4 w-4" />
       </button>
+
+      <button
+        onClick={runGeometryDebug}
+        className="absolute bottom-[172px] right-[64px] w-8 h-8 flex items-center justify-center rounded bg-card/80 border border-border/50 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors shadow-sm"
+        title="Debug geometry"
+      >
+        <Bug className="h-4 w-4" />
+      </button>
+
+      {debugInfo && (
+        <div className="absolute top-4 left-4 max-w-[600px] max-h-[80vh] overflow-auto bg-card/95 border border-border rounded-lg shadow-lg p-4 z-50">
+          <div className="flex justify-between items-center mb-2">
+            <span className="font-mono text-sm font-bold text-foreground">Geometry Debug</span>
+            <button onClick={() => setDebugInfo(null)} className="text-muted-foreground hover:text-foreground text-xs px-2 py-1 border border-border rounded">Close</button>
+          </div>
+          <pre className="text-xs font-mono whitespace-pre-wrap text-foreground/80">{debugInfo}</pre>
+        </div>
+      )}
 
       {children}
     </div>
