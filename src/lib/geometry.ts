@@ -161,14 +161,168 @@ export function rectToPolygon(origin: Point2D, width: number, height: number): P
   ];
 }
 
+/** Info about a fold line needed for manual base face construction */
+export interface FoldLineInfoForBaseFace {
+  linePoint: Point2D;
+  tangent: Point2D;
+  normal: Point2D;
+  tMin: number;
+  tMax: number;
+  blocked: [number, number][];
+  bendSegments: [number, number][];
+}
+
+/**
+ * Build base face geometry manually, with full control over sidewalls.
+ * This eliminates the steg (material bridge) problem by never generating
+ * hole sidewall quads near the fold line in blocked intervals.
+ */
+function buildBaseFaceManual(
+  profile: Point2D[],
+  thickness: number,
+  cutoutPolygons: Point2D[][],
+  foldLineInfos: FoldLineInfoForBaseFace[],
+): THREE.BufferGeometry {
+  const verts: number[] = [];
+  const indices: number[] = [];
+
+  // Triangulate using THREE.ShapeUtils (same as ExtrudeGeometry uses internally)
+  const outerPts = profile.map(p => new THREE.Vector2(p.x, p.y));
+  const holeArrays = cutoutPolygons
+    .filter(p => p.length >= 3)
+    .map(poly => poly.map(p => new THREE.Vector2(p.x, p.y)));
+
+  const faces = THREE.ShapeUtils.triangulateShape(outerPts, holeArrays);
+
+  // Flat vertex array: [outer vertices..., hole1 vertices..., hole2 vertices..., ...]
+  const allPts: THREE.Vector2[] = [...outerPts];
+  for (const h of holeArrays) allPts.push(...h);
+
+  // Top face at z=thickness
+  for (const p of allPts) verts.push(p.x, p.y, thickness);
+  for (const [a, b, c] of faces) indices.push(a, b, c);
+
+  // Bottom face at z=0 (reversed winding)
+  const botOff = allPts.length;
+  for (const p of allPts) verts.push(p.x, p.y, 0);
+  for (const [a, b, c] of faces) indices.push(botOff + a, botOff + c, botOff + b);
+
+  let vi = allPts.length * 2;
+
+  // Helper: add a sidewall quad between two 2D points
+  function addQuad(x0: number, y0: number, x1: number, y1: number) {
+    verts.push(x0, y0, 0);
+    verts.push(x1, y1, 0);
+    verts.push(x1, y1, thickness);
+    verts.push(x0, y0, thickness);
+    indices.push(vi, vi + 1, vi + 2, vi, vi + 2, vi + 3);
+    vi += 4;
+  }
+
+  // Helper: project point to fold line local (t, d) space
+  function projectToFold(px: number, py: number, fl: FoldLineInfoForBaseFace) {
+    const vx = px - fl.linePoint.x;
+    const vy = py - fl.linePoint.y;
+    return {
+      t: vx * fl.tangent.x + vy * fl.tangent.y,
+      d: vx * fl.normal.x + vy * fl.normal.y,
+    };
+  }
+
+  const D_TOL = 0.5; // tolerance for "on fold line"
+
+  // ── Outer profile sidewalls ──
+  for (let i = 0; i < profile.length; i++) {
+    const j = (i + 1) % profile.length;
+    const p0 = profile[i], p1 = profile[j];
+
+    let onFoldLine = false;
+    for (const fl of foldLineInfos) {
+      const l0 = projectToFold(p0.x, p0.y, fl);
+      const l1 = projectToFold(p1.x, p1.y, fl);
+
+      if (Math.abs(l0.d) < D_TOL && Math.abs(l1.d) < D_TOL) {
+        // Edge is on the fold line — only generate quads for bendSegments
+        onFoldLine = true;
+        const edgeTMin = Math.min(l0.t, l1.t);
+        const edgeTMax = Math.max(l0.t, l1.t);
+
+        for (const [segT0, segT1] of fl.bendSegments) {
+          const clT0 = Math.max(segT0, edgeTMin);
+          const clT1 = Math.min(segT1, edgeTMax);
+          if (clT1 <= clT0 + 0.01) continue;
+
+          const x0 = fl.linePoint.x + fl.tangent.x * clT0;
+          const y0 = fl.linePoint.y + fl.tangent.y * clT0;
+          const x1 = fl.linePoint.x + fl.tangent.x * clT1;
+          const y1 = fl.linePoint.y + fl.tangent.y * clT1;
+          addQuad(x0, y0, x1, y1);
+        }
+        break;
+      }
+    }
+
+    if (!onFoldLine) {
+      addQuad(p0.x, p0.y, p1.x, p1.y);
+    }
+  }
+
+  // ── Hole sidewalls ──
+  const HOLE_D_TOL = thickness * 1.5; // generous threshold for hole edge filtering
+  for (const holePoly of cutoutPolygons) {
+    if (holePoly.length < 3) continue;
+    for (let i = 0; i < holePoly.length; i++) {
+      const j = (i + 1) % holePoly.length;
+      const p0 = holePoly[i], p1 = holePoly[j];
+
+      let skip = false;
+      for (const fl of foldLineInfos) {
+        const l0 = projectToFold(p0.x, p0.y, fl);
+        const l1 = projectToFold(p1.x, p1.y, fl);
+
+        // If both endpoints near the fold line
+        if (Math.abs(l0.d) < HOLE_D_TOL && Math.abs(l1.d) < HOLE_D_TOL) {
+          const midT = (l0.t + l1.t) / 2;
+          // Check if midpoint t falls within any blocked interval
+          for (const [bStart, bEnd] of fl.blocked) {
+            if (midT >= bStart - 0.5 && midT <= bEnd + 0.5) {
+              skip = true;
+              break;
+            }
+          }
+        }
+        if (skip) break;
+      }
+
+      if (!skip) {
+        addQuad(p0.x, p0.y, p1.x, p1.y);
+      }
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
 /**
  * Create an extruded mesh from a profile and thickness, with optional polygon cutouts (holes).
+ * When foldLineInfos is provided (non-empty), uses manual geometry construction
+ * to avoid the steg problem. Otherwise falls back to ExtrudeGeometry.
  */
 export function createBaseFaceMesh(
   profile: Point2D[],
   thickness: number,
   cutoutPolygons?: Point2D[][],
+  foldLineInfos?: FoldLineInfoForBaseFace[],
 ): THREE.BufferGeometry {
+  // Use manual builder when fold lines with blocked intervals exist
+  if (foldLineInfos && foldLineInfos.length > 0) {
+    return buildBaseFaceManual(profile, thickness, cutoutPolygons || [], foldLineInfos);
+  }
+
   const shape = profileToShape(profile);
 
   if (cutoutPolygons && cutoutPolygons.length > 0) {
@@ -1178,93 +1332,6 @@ export function computeFoldLineInfo(
   const bendSegments = complementIntervals(tMin, tMax, blocked);
 
   return { linePoint: fs, tangent: tang, normal: norm, tMin, tMax, blocked, bendSegments };
-}
-
-/**
- * Build segmented sidewall quads along a fold edge for unblocked segments only.
- * This replaces the ExtrudeGeometry sidewalls along the fold line deterministically.
- */
-export function buildFoldEdgeSidewalls(
-  foldLineInfo: {
-    linePoint: Point2D; tangent: Point2D;
-    bendSegments: [number, number][];
-  },
-  thickness: number,
-): THREE.BufferGeometry {
-  const { linePoint, tangent, bendSegments } = foldLineInfo;
-  const verts: number[] = [];
-  const indices: number[] = [];
-  let vi = 0;
-
-  for (const [t0, t1] of bendSegments) {
-    const x0 = linePoint.x + tangent.x * t0;
-    const y0 = linePoint.y + tangent.y * t0;
-    const x1 = linePoint.x + tangent.x * t1;
-    const y1 = linePoint.y + tangent.y * t1;
-
-    // v0: (t0, z=0), v1: (t1, z=0), v2: (t1, z=thickness), v3: (t0, z=thickness)
-    verts.push(x0, y0, 0);
-    verts.push(x1, y1, 0);
-    verts.push(x1, y1, thickness);
-    verts.push(x0, y0, thickness);
-
-    indices.push(vi, vi + 1, vi + 2);
-    indices.push(vi, vi + 2, vi + 3);
-    vi += 4;
-  }
-
-  const geo = new THREE.BufferGeometry();
-  if (verts.length > 0) {
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    geo.setIndex(indices);
-    geo.computeVertexNormals();
-  }
-  return geo;
-}
-
-/**
- * Remove ALL sidewall triangles along a fold line from an ExtrudeGeometry.
- * We rebuild correct segmented sidewalls separately via buildFoldEdgeSidewalls.
- */
-export function removeAllFoldEdgeSidewalls(
-  geometry: THREE.BufferGeometry,
-  foldLines: { linePoint: Point2D; tangent: Point2D; normal: Point2D; tMin: number; tMax: number }[],
-): void {
-  const pos = geometry.getAttribute('position');
-  const idx = geometry.getIndex();
-  if (!idx) return;
-
-  const newIdx: number[] = [];
-  for (let i = 0; i < idx.count; i += 3) {
-    const a = idx.getX(i), b = idx.getX(i + 1), c = idx.getX(i + 2);
-    const verts = [a, b, c].map(vi => ({
-      x: pos.getX(vi), y: pos.getY(vi), z: pos.getZ(vi),
-    }));
-
-    let remove = false;
-    for (const fl of foldLines) {
-      const ds = verts.map(v =>
-        (v.x - fl.linePoint.x) * fl.normal.x + (v.y - fl.linePoint.y) * fl.normal.y
-      );
-      if (!ds.every(d => Math.abs(d) < 1.0)) continue;
-
-      const ts = verts.map(v =>
-        (v.x - fl.linePoint.x) * fl.tangent.x + (v.y - fl.linePoint.y) * fl.tangent.y
-      );
-      const minT = Math.min(...ts);
-      const maxT = Math.max(...ts);
-      if (maxT > fl.tMin - 0.5 && minT < fl.tMax + 0.5) {
-        remove = true;
-        break;
-      }
-    }
-
-    if (!remove) {
-      newIdx.push(a, b, c);
-    }
-  }
-
-  geometry.setIndex(newIdx);
 }
 
 export interface StressRelief {
