@@ -1053,21 +1053,30 @@ export function computeFoldBlockedIntervalsTD(
 
     if (uniq.length >= 2) {
       // Pair events, verify blocked via midpoint containment
+      // Test at multiple d-offsets for robustness (boundary points are unreliable)
       for (let k = 0; k + 1 < uniq.length; k++) {
         const midT = (uniq[k] + uniq[k + 1]) / 2;
-        if (pointInPoly(midT, foldD, poly) || pointInPoly(midT, foldD + eps * 0.1, poly)) {
+        const isBlocked =
+          pointInPoly(midT, foldD, poly) ||
+          pointInPoly(midT, foldD + eps * 0.5, poly) ||
+          pointInPoly(midT, foldD - eps * 0.5, poly) ||
+          pointInPoly(midT, foldD + eps, poly);
+        if (isBlocked) {
           const b0 = Math.max(uniq[k], tMin);
           const b1 = Math.min(uniq[k + 1], tMax);
           if (b1 > b0 + 0.01) blocked.push([b0, b1]);
         }
       }
     } else if (uniq.length <= 1) {
-      // Pass 3: sampling fallback
-      const SAMPLES = 20;
+      // Pass 3: sampling fallback — test at multiple d-offsets
+      const SAMPLES = 40;
       let insideStart: number | null = null;
       for (let s = 0; s <= SAMPLES; s++) {
         const t = tMin + (tMax - tMin) * (s / SAMPLES);
-        const inside = pointInPoly(t, foldD, poly);
+        const inside =
+          pointInPoly(t, foldD, poly) ||
+          pointInPoly(t, foldD + eps * 0.5, poly) ||
+          pointInPoly(t, foldD + eps, poly);
         if (inside && insideStart === null) insideStart = t;
         if (!inside && insideStart !== null) {
           blocked.push([insideStart, t]);
@@ -1891,9 +1900,17 @@ export function createFoldMesh(
       clipped = clipPolygonByLine(clipped, { x: segTMin - 0.1, y: 0 }, { x: -1, y: 0 });
       clipped = clipPolygonByLine(clipped, { x: segTMax + 0.1, y: 0 }, { x: 1, y: 0 });
       if (clipped.length < 3) continue;
-      // Skip holes that touch d=0 within this segment (they caused the bend-line split)
+      // Check if hole touches the bend line (d≈0) within this segment
       const nearBend = clipped.filter(v => v.y < DTOL && v.x > segTMin - 0.1 && v.x < segTMax + 0.1);
-      if (nearBend.length >= 2) continue;
+      if (nearBend.length >= 2) {
+        // Hole touches boundary — check if it extends significantly into the tip
+        const maxD = Math.max(...clipped.map(v => v.y));
+        if (maxD < DTOL * 2) continue; // Very shallow hole — already handled by bend-line split
+        // Deep hole: clip away the boundary-touching region to avoid earcut issues
+        // Keep only the part above d = small threshold
+        clipped = clipPolygonByLine(clipped, { x: 0, y: 0.2 }, { x: 0, y: -1 });
+        if (clipped.length < 3) continue;
+      }
       segTipHoles.push(clipped);
     }
 
