@@ -1319,102 +1319,88 @@ export function createFoldMesh(
   const tMin = Math.min(...foldTs);
   const tMax = Math.max(...foldTs);
 
-  // ═══════ ARC GEOMETRY — polygon-bounded with smooth inner/outer ═══════
-  const arcVerts: number[] = [];
-  const arcNormals: number[] = [];
-  const arcIdx: number[] = [];
-  let arcVi = 0;
-  function addArcV(v: THREE.Vector3, n: THREE.Vector3): number {
-    arcVerts.push(v.x, v.y, v.z);
-    arcNormals.push(n.x, n.y, n.z);
-    return arcVi++;
+  // ── Convert cutouts to (t,d) space early for bend-line splitting ──
+  const holeLocs: { t: number; d: number }[][] = [];
+  const tipHolePoly: Point2D[][] = [];
+  if (movingCutouts && movingCutouts.length > 0) {
+    for (const cutPoly of movingCutouts) {
+      const cutLocs = cutPoly.map(p => toLocal(p));
+      if (cutLocs.length < 3) continue;
+      holeLocs.push(cutLocs);
+      tipHolePoly.push(cutLocs.map(l => ({ x: l.t, y: l.d })));
+    }
   }
 
-  const ARC_N = 24;
+  // ── Split bend line by holes: remove intervals blocked by cutouts at d≈0 ──
+  const blocked: [number, number][] = [];
+  for (const hPts of tipHolePoly) {
+    const nearBend = hPts.filter(v => v.y < DTOL);
+    if (nearBend.length >= 2) {
+      const bMin = Math.min(...nearBend.map(v => v.x));
+      const bMax = Math.max(...nearBend.map(v => v.x));
+      if (bMax > tMin && bMin < tMax) {
+        blocked.push([Math.max(bMin, tMin), Math.min(bMax, tMax)]);
+      }
+    }
+  }
 
-  // ── Compute polygon-edge slopes at fold line endpoints for arc tapering ──
-  // For diagonal folds the polygon boundary narrows away from the fold line.
-  // Tapering the arc's t-boundaries with θ creates the ruled-surface "twist"
-  // visible in Inventor, instead of flat rectangular end-caps.
-  let leftSlope = 0;   // dt/dd from left fold-line vertex toward adjacent non-fold vertex
-  let rightSlope = 0;  // dt/dd from right fold-line vertex toward adjacent non-fold vertex
-  let leftAdjD = Infinity;
-  let rightAdjD = Infinity;
+  let bendSegments: [number, number][];
+  if (blocked.length === 0) {
+    bendSegments = [[tMin, tMax]];
+  } else {
+    blocked.sort((a, b) => a[0] - b[0]);
+    const merged: [number, number][] = [[blocked[0][0], blocked[0][1]]];
+    for (let i = 1; i < blocked.length; i++) {
+      const last = merged[merged.length - 1];
+      if (blocked[i][0] <= last[1] + 0.01) {
+        last[1] = Math.max(last[1], blocked[i][1]);
+      } else {
+        merged.push([blocked[i][0], blocked[i][1]]);
+      }
+    }
+    bendSegments = [];
+    let cursor = tMin;
+    for (const [bStart, bEnd] of merged) {
+      if (bStart > cursor + 0.01) bendSegments.push([cursor, bStart]);
+      cursor = bEnd;
+    }
+    if (tMax > cursor + 0.01) bendSegments.push([cursor, tMax]);
+  }
+
+  if (bendSegments.length === 0) return null;
+
+  // ── Compute global polygon-edge slopes for tapering ──
+  let globalLeftSlope = 0, globalRightSlope = 0;
+  let globalLeftAdjD = Infinity, globalRightAdjD = Infinity;
 
   const foldIdxs: number[] = [];
   for (let fi = 0; fi < locs.length; fi++) {
     if (locs[fi].d < DTOL) foldIdxs.push(fi);
   }
   if (foldIdxs.length >= 2) {
-    // Left fold vertex (smallest t)
     let leftIdx = foldIdxs[0];
     for (const fi of foldIdxs) { if (locs[fi].t < locs[leftIdx].t) leftIdx = fi; }
     const ln1 = (leftIdx - 1 + locs.length) % locs.length;
     const ln2 = (leftIdx + 1) % locs.length;
     const lAdj = locs[ln1].d >= DTOL ? locs[ln1] : (locs[ln2].d >= DTOL ? locs[ln2] : null);
     if (lAdj && lAdj.d > DTOL) {
-      leftSlope = (lAdj.t - tMin) / lAdj.d;
-      leftAdjD = lAdj.d;
+      globalLeftSlope = (lAdj.t - tMin) / lAdj.d;
+      globalLeftAdjD = lAdj.d;
     }
-
-    // Right fold vertex (largest t)
     let rightIdx = foldIdxs[0];
     for (const fi of foldIdxs) { if (locs[fi].t > locs[rightIdx].t) rightIdx = fi; }
     const rn1 = (rightIdx - 1 + locs.length) % locs.length;
     const rn2 = (rightIdx + 1) % locs.length;
     const rAdj = locs[rn1].d >= DTOL ? locs[rn1] : (locs[rn2].d >= DTOL ? locs[rn2] : null);
     if (rAdj && rAdj.d > DTOL) {
-      rightSlope = (rAdj.t - tMax) / rAdj.d;
-      rightAdjD = rAdj.d;
+      globalRightSlope = (rAdj.t - tMax) / rAdj.d;
+      globalRightAdjD = rAdj.d;
     }
   }
 
   const K_FACTOR = 0.44;
-  const BA_taper = (R + K_FACTOR * TH) * A; // bend allowance = flat-pattern d consumed by arc
-
-  interface ArcStep {
-    ang: number;
-    tLI: number; tRI: number;
-    tLO: number; tRO: number;
-  }
-  const arcSteps: ArcStep[] = [];
-  for (let i = 0; i <= ARC_N; i++) {
-    const ang = A * (i / ARC_N);
-    const d_eq = BA_taper * (i / ARC_N); // equivalent flat-pattern distance from fold line
-
-    // Taper boundaries following polygon edge slopes, clamped to adjacent vertex
-    const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
-    const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
-
-    arcSteps.push({ ang, tLI: tL, tRI: tR, tLO: tL, tRO: tR });
-  }
-
-  // ── Convert cutouts to (t, θ) space for arc grid hole detection ──
-
+  const BA_taper = (R + K_FACTOR * TH) * A;
   const R_neutral = R + K_FACTOR * TH;
-  const arcHoleLocs: Point2D[][] = [];
-  if (movingCutouts && movingCutouts.length > 0) {
-    for (const cutPoly of movingCutouts) {
-      const cutTTheta: Point2D[] = cutPoly.map(p => {
-        const loc = toLocal(p);
-        const theta = loc.d / R_neutral;
-        return { x: loc.t, y: theta };
-      });
-      if (cutTTheta.length < 3) continue;
-      const minTheta = Math.min(...cutTTheta.map(p => p.y));
-      const maxTheta = Math.max(...cutTTheta.map(p => p.y));
-      const hasArcPart = maxTheta > 0.001 && minTheta < A - 0.001;
-      if (!hasArcPart) continue;
-      // Clip to arc bounds
-      let clippedArcCut = [...cutTTheta];
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: 0 }, { x: 0, y: -1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: 0, y: A }, { x: 0, y: 1 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMin - 0.1, y: 0 }, { x: -1, y: 0 });
-      clippedArcCut = clipPolygonByLine(clippedArcCut, { x: tMax + 0.1, y: 0 }, { x: 1, y: 0 });
-      if (clippedArcCut.length < 3) continue;
-      arcHoleLocs.push(clippedArcCut);
-    }
-  }
 
   // Point-in-polygon test (ray casting)
   function pointInPolygon(px: number, py: number, poly: Point2D[]): boolean {
@@ -1429,170 +1415,20 @@ export function createFoldMesh(
     return inside;
   }
 
-  function isInsideAnyHole(t: number, theta: number): boolean {
-    for (const hole of arcHoleLocs) {
-      if (pointInPolygon(t, theta, hole)) return true;
-    }
-    return false;
+  // movPoly as Point2D for clipping
+  const movPolyPts: Point2D[] = locs.map(l => ({ x: l.t, y: l.d }));
+
+  // ═══════ ACCUMULATORS ═══════
+  const arcVerts: number[] = [];
+  const arcNormals: number[] = [];
+  const arcIdx: number[] = [];
+  let arcVi = 0;
+  function addArcV(v: THREE.Vector3, n: THREE.Vector3): number {
+    arcVerts.push(v.x, v.y, v.z);
+    arcNormals.push(n.x, n.y, n.z);
+    return arcVi++;
   }
 
-  /** Check if a grid cell overlaps any hole — tests center + all 4 corners */
-  function cellOverlapsHole(it: number, ia: number): boolean {
-    if (arcHoleLocs.length === 0) return false;
-    // Compute 5 sample points for this cell
-    const samples = [
-      { itF: it + 0.5, iaF: ia + 0.5 },   // center
-      { itF: it, iaF: ia },                 // corner 00
-      { itF: it + 1, iaF: ia },             // corner 10
-      { itF: it, iaF: ia + 1 },             // corner 01
-      { itF: it + 1, iaF: ia + 1 },         // corner 11
-    ];
-    for (const s of samples) {
-      const theta = A * (s.iaF / GRID_THETA);
-      const d_eq = BA_taper * (s.iaF / GRID_THETA);
-      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
-      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
-      const t = tL + (tR - tL) * (s.itF / GRID_T);
-      if (isInsideAnyHole(t, theta)) return true;
-    }
-    return false;
-  }
-
-  // ── Build arc mesh via manual grid triangulation (avoids earcut hole issues) ──
-  const GRID_T = 40; // subdivisions along t
-  const GRID_THETA = ARC_N; // subdivisions along θ (same as arc steps)
-
-  // Build inner surface
-  const innerArcBase = arcVi;
-  // Pre-compute grid vertex indices (or -1 if inside a hole)
-  const innerVIdx: number[][] = [];
-  for (let it = 0; it <= GRID_T; it++) {
-    innerVIdx[it] = [];
-    for (let ia = 0; ia <= GRID_THETA; ia++) {
-      const theta = A * (ia / GRID_THETA);
-      const d_eq = BA_taper * (ia / GRID_THETA);
-      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
-      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
-      const t = tL + (tR - tL) * (it / GRID_T);
-
-      const v = arcInner(t, theta);
-      const n = U3.clone().multiplyScalar(-Math.sin(theta))
-        .add(W3.clone().multiplyScalar(Math.cos(theta)));
-      innerVIdx[it][ia] = addArcV(v, n);
-    }
-  }
-
-  // Build inner triangles, skipping cells that overlap any cutout
-  let skippedCells = 0;
-  for (let it = 0; it < GRID_T; it++) {
-    for (let ia = 0; ia < GRID_THETA; ia++) {
-      if (cellOverlapsHole(it, ia)) { skippedCells++; continue; }
-
-      const v00 = innerVIdx[it][ia];
-      const v10 = innerVIdx[it + 1][ia];
-      const v01 = innerVIdx[it][ia + 1];
-      const v11 = innerVIdx[it + 1][ia + 1];
-      arcIdx.push(v00, v10, v11, v00, v11, v01);
-    }
-  }
-
-  // Build outer surface
-  const outerVIdx: number[][] = [];
-  for (let it = 0; it <= GRID_T; it++) {
-    outerVIdx[it] = [];
-    for (let ia = 0; ia <= GRID_THETA; ia++) {
-      const theta = A * (ia / GRID_THETA);
-      const d_eq = BA_taper * (ia / GRID_THETA);
-      const tL = tMin + leftSlope * Math.min(d_eq, leftAdjD);
-      const tR = tMax + rightSlope * Math.min(d_eq, rightAdjD);
-      const t = tL + (tR - tL) * (it / GRID_T);
-
-      const v = arcOuter(t, theta);
-      const n = U3.clone().multiplyScalar(Math.sin(theta))
-        .add(W3.clone().multiplyScalar(-Math.cos(theta)));
-      outerVIdx[it][ia] = addArcV(v, n);
-    }
-  }
-
-  // Build outer triangles (reversed winding), same hole skipping
-  for (let it = 0; it < GRID_T; it++) {
-    for (let ia = 0; ia < GRID_THETA; ia++) {
-      if (cellOverlapsHole(it, ia)) continue;
-
-      const v00 = outerVIdx[it][ia];
-      const v10 = outerVIdx[it + 1][ia];
-      const v01 = outerVIdx[it][ia + 1];
-      const v11 = outerVIdx[it + 1][ia + 1];
-      arcIdx.push(v00, v11, v10, v00, v01, v11);
-    }
-  }
-  
-
-  // Left side surface — connecting inner to outer along left boundary
-  for (let i = 0; i < ARC_N; i++) {
-    const cStep = arcSteps[i], nStep = arcSteps[i + 1];
-    const p0 = arcInner(cStep.tLI, cStep.ang);
-    const p1 = arcOuter(cStep.tLO, cStep.ang);
-    const p2 = arcInner(nStep.tLI, nStep.ang);
-    const p3 = arcOuter(nStep.tLO, nStep.ang);
-
-    const e1 = new THREE.Vector3().subVectors(p2, p0);
-    const e2 = new THREE.Vector3().subVectors(p1, p0);
-    const fN = new THREE.Vector3().crossVectors(e1, e2).normalize();
-
-    const v0 = addArcV(p0, fN);
-    const v1 = addArcV(p1, fN);
-    const v2 = addArcV(p2, fN);
-    const v3 = addArcV(p3, fN);
-    arcIdx.push(v0, v1, v3, v0, v3, v2);
-  }
-
-  // Right side surface
-  for (let i = 0; i < ARC_N; i++) {
-    const cStep = arcSteps[i], nStep = arcSteps[i + 1];
-    const p0 = arcInner(cStep.tRI, cStep.ang);
-    const p1 = arcOuter(cStep.tRO, cStep.ang);
-    const p2 = arcInner(nStep.tRI, nStep.ang);
-    const p3 = arcOuter(nStep.tRO, nStep.ang);
-
-    const e1 = new THREE.Vector3().subVectors(p2, p0);
-    const e2 = new THREE.Vector3().subVectors(p1, p0);
-    const fN = new THREE.Vector3().crossVectors(e2, e1).normalize();
-
-    const v0 = addArcV(p0, fN);
-    const v1 = addArcV(p1, fN);
-    const v2 = addArcV(p2, fN);
-    const v3 = addArcV(p3, fN);
-    arcIdx.push(v0, v2, v3, v0, v3, v1);
-  }
-
-  // Hole side walls — connect inner to outer through each hole boundary
-  for (const holePts of arcHoleLocs) {
-    for (let i = 0; i < holePts.length; i++) {
-      const j = (i + 1) % holePts.length;
-      const pII = arcInner(holePts[i].x, holePts[i].y);
-      const pIJ = arcInner(holePts[j].x, holePts[j].y);
-      const pOI = arcOuter(holePts[i].x, holePts[i].y);
-      const pOJ = arcOuter(holePts[j].x, holePts[j].y);
-
-      const e1 = new THREE.Vector3().subVectors(pIJ, pII);
-      const e2 = new THREE.Vector3().subVectors(pOI, pII);
-      const sN = new THREE.Vector3().crossVectors(e1, e2).normalize();
-
-      const sII = addArcV(pII, sN);
-      const sIJ = addArcV(pIJ, sN);
-      const sOJ = addArcV(pOJ, sN);
-      const sOI = addArcV(pOI, sN);
-      arcIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
-    }
-  }
-
-  const arcGeo = new THREE.BufferGeometry();
-  arcGeo.setAttribute('position', new THREE.Float32BufferAttribute(arcVerts, 3));
-  arcGeo.setAttribute('normal', new THREE.Float32BufferAttribute(arcNormals, 3));
-  arcGeo.setIndex(arcIdx);
-
-  // ═══════ TIP GEOMETRY — ShapeGeometry-based triangulation with hole support ═══════
   const tipVerts: number[] = [];
   const tipNormals: number[] = [];
   const tipIdx: number[] = [];
@@ -1603,219 +1439,318 @@ export function createFoldMesh(
     return tipVi++;
   }
 
-  // Inner face normal matches arc inner normal at theta=A
-  const nTipInner = U3.clone().multiplyScalar(-sinA)
-    .add(W3.clone().multiplyScalar(cosA));
-  // Outer face normal matches arc outer normal at theta=A
-  const nTipOuter = U3.clone().multiplyScalar(sinA)
-    .add(W3.clone().multiplyScalar(-cosA));
+  const ARC_N = 24;
+  const GRID_T = 40;
+  const GRID_THETA = ARC_N;
+  const nTipInner = U3.clone().multiplyScalar(-sinA).add(W3.clone().multiplyScalar(cosA));
+  const nTipOuter = U3.clone().multiplyScalar(sinA).add(W3.clone().multiplyScalar(-cosA));
 
-  // Taper adjustment for fold-line vertices
-  const arcEndStep = arcSteps[ARC_N];
-  const tL_end = arcEndStep.tLI;
-  const tR_end = arcEndStep.tRI;
-  function taperT(t: number, d: number): number {
-    if (d < DTOL && tMax > tMin) {
-      const frac = (t - tMin) / (tMax - tMin);
-      return tL_end + frac * (tR_end - tL_end);
-    }
-    return t;
+  interface ArcStep {
+    ang: number;
+    tLI: number; tRI: number;
+    tLO: number; tRO: number;
   }
 
-  // ── Convert cutouts to (t,d) space for tip grid hole detection ──
-  const holeLocs: { t: number; d: number }[][] = [];
-  const tipHolePoly: Point2D[][] = []; // same holes as Point2D for pointInPolygon reuse
-  if (movingCutouts && movingCutouts.length > 0) {
-    for (const cutPoly of movingCutouts) {
-      const cutLocs = cutPoly.map(p => toLocal(p));
-      if (cutLocs.length < 3) continue;
-      holeLocs.push(cutLocs);
-      tipHolePoly.push(cutLocs.map(l => ({ x: l.t, y: l.d })));
-    }
-  }
+  // ═══════ PER-SEGMENT GENERATION ═══════
+  for (const [segTMin, segTMax] of bendSegments) {
+    const isLeftEdge = Math.abs(segTMin - tMin) < 0.1;
+    const isRightEdge = Math.abs(segTMax - tMax) < 0.1;
+    const segLeftSlope = isLeftEdge ? globalLeftSlope : 0;
+    const segRightSlope = isRightEdge ? globalRightSlope : 0;
+    const segLeftAdjD = isLeftEdge ? globalLeftAdjD : Infinity;
+    const segRightAdjD = isRightEdge ? globalRightAdjD : Infinity;
 
-  // movPoly as Point2D for pointInPolygon
-  const movPolyPts: Point2D[] = locs.map(l => ({ x: l.t, y: l.d }));
-
-  // ── Boundary-merged tip triangulation (merges boundary-touching cutouts into outer polygon) ──
-  const D_MERGE_TOL = DTOL;
-  let tipOuterPoly: Point2D[] = [...movPolyPts];
-  const tipInteriorHoles: Point2D[][] = [];
-  const mergedHoleIndices = new Set<number>();
-
-  for (let hi = 0; hi < tipHolePoly.length; hi++) {
-    const hPts = tipHolePoly[hi];
-    const bndVerts = hPts.filter(v => v.y < D_MERGE_TOL);
-
-    if (bndVerts.length < 2) {
-      tipInteriorHoles.push(hPts);
-      continue;
+    // ── ARC for this segment ──
+    const arcSteps: ArcStep[] = [];
+    for (let i = 0; i <= ARC_N; i++) {
+      const ang = A * (i / ARC_N);
+      const d_eq = BA_taper * (i / ARC_N);
+      const tL = segTMin + segLeftSlope * Math.min(d_eq, segLeftAdjD);
+      const tR = segTMax + segRightSlope * Math.min(d_eq, segRightAdjD);
+      arcSteps.push({ ang, tLI: tL, tRI: tR, tLO: tL, tRO: tR });
     }
 
-    // Find entry (min t) and exit (max t) on boundary
-    const entryT = Math.min(...bndVerts.map(v => v.x));
-    const exitT = Math.max(...bndVerts.map(v => v.x));
+    // Convert cutouts to (t, θ) space for this segment
+    const segArcHoleLocs: Point2D[][] = [];
+    for (const hLocs of holeLocs) {
+      const cutTTheta: Point2D[] = hLocs.map(l => ({ x: l.t, y: l.d / R_neutral }));
+      if (cutTTheta.length < 3) continue;
+      const minTheta = Math.min(...cutTTheta.map(p => p.y));
+      const maxTheta = Math.max(...cutTTheta.map(p => p.y));
+      if (!(maxTheta > 0.001 && minTheta < A - 0.001)) continue;
+      let clipped = [...cutTTheta];
+      clipped = clipPolygonByLine(clipped, { x: 0, y: 0 }, { x: 0, y: -1 });
+      clipped = clipPolygonByLine(clipped, { x: 0, y: A }, { x: 0, y: 1 });
+      clipped = clipPolygonByLine(clipped, { x: segTMin - 0.1, y: 0 }, { x: -1, y: 0 });
+      clipped = clipPolygonByLine(clipped, { x: segTMax + 0.1, y: 0 }, { x: 1, y: 0 });
+      if (clipped.length < 3) continue;
+      segArcHoleLocs.push(clipped);
+    }
 
-    // Find entry vertex index in hole polygon
-    let entryIdx = 0;
-    let minDist = Infinity;
-    for (let i = 0; i < hPts.length; i++) {
-      if (hPts[i].y < D_MERGE_TOL) {
-        const d = Math.abs(hPts[i].x - entryT);
-        if (d < minDist) { minDist = d; entryIdx = i; }
+    function segIsInsideAnyArcHole(t: number, theta: number): boolean {
+      for (const hole of segArcHoleLocs) {
+        if (pointInPolygon(t, theta, hole)) return true;
+      }
+      return false;
+    }
+
+    function segCellOverlapsArcHole(it: number, ia: number): boolean {
+      if (segArcHoleLocs.length === 0) return false;
+      const samples = [
+        { itF: it + 0.5, iaF: ia + 0.5 },
+        { itF: it, iaF: ia },
+        { itF: it + 1, iaF: ia },
+        { itF: it, iaF: ia + 1 },
+        { itF: it + 1, iaF: ia + 1 },
+      ];
+      for (const s of samples) {
+        const theta = A * (s.iaF / GRID_THETA);
+        const d_eq = BA_taper * (s.iaF / GRID_THETA);
+        const tL = segTMin + segLeftSlope * Math.min(d_eq, segLeftAdjD);
+        const tR = segTMax + segRightSlope * Math.min(d_eq, segRightAdjD);
+        const t = tL + (tR - tL) * (s.itF / GRID_T);
+        if (segIsInsideAnyArcHole(t, theta)) return true;
+      }
+      return false;
+    }
+
+    // Build inner arc surface
+    const segInnerVIdx: number[][] = [];
+    for (let it = 0; it <= GRID_T; it++) {
+      segInnerVIdx[it] = [];
+      for (let ia = 0; ia <= GRID_THETA; ia++) {
+        const theta = A * (ia / GRID_THETA);
+        const d_eq = BA_taper * (ia / GRID_THETA);
+        const tL = segTMin + segLeftSlope * Math.min(d_eq, segLeftAdjD);
+        const tR = segTMax + segRightSlope * Math.min(d_eq, segRightAdjD);
+        const t = tL + (tR - tL) * (it / GRID_T);
+        const v = arcInner(t, theta);
+        const n = U3.clone().multiplyScalar(-Math.sin(theta))
+          .add(W3.clone().multiplyScalar(Math.cos(theta)));
+        segInnerVIdx[it][ia] = addArcV(v, n);
       }
     }
 
-    // Walk forward from entry to collect interior arc vertices
-    const n = hPts.length;
-    const arcVerts: Point2D[] = [];
-    for (let step = 1; step < n; step++) {
-      const v = hPts[(entryIdx + step) % n];
-      // Stop when we reach exit vertex on boundary
-      if (v.y < D_MERGE_TOL && Math.abs(v.x - exitT) < 0.5) break;
-      arcVerts.push(v);
-    }
-
-    if (arcVerts.length < 2) {
-      tipInteriorHoles.push(hPts);
-      continue;
-    }
-
-    // Splice notch into outer polygon
-    const newOuter: Point2D[] = [];
-    let spliced = false;
-
-    for (let i = 0; i < tipOuterPoly.length; i++) {
-      const curr = tipOuterPoly[i];
-      const next = tipOuterPoly[(i + 1) % tipOuterPoly.length];
-      newOuter.push(curr);
-
-      if (!spliced && curr.y < D_MERGE_TOL && next.y < D_MERGE_TOL) {
-        const edgeMinT = Math.min(curr.x, next.x);
-        const edgeMaxT = Math.max(curr.x, next.x);
-
-        if (edgeMinT <= entryT + 0.5 && edgeMaxT >= exitT - 0.5) {
-          const goingRight = next.x > curr.x;
-          if (goingRight) {
-            newOuter.push({ x: entryT, y: 0 });
-            newOuter.push(...arcVerts);
-            newOuter.push({ x: exitT, y: 0 });
-          } else {
-            newOuter.push({ x: exitT, y: 0 });
-            newOuter.push(...[...arcVerts].reverse());
-            newOuter.push({ x: entryT, y: 0 });
-          }
-          spliced = true;
-        }
+    // Inner triangles
+    for (let it = 0; it < GRID_T; it++) {
+      for (let ia = 0; ia < GRID_THETA; ia++) {
+        if (segCellOverlapsArcHole(it, ia)) continue;
+        const v00 = segInnerVIdx[it][ia];
+        const v10 = segInnerVIdx[it + 1][ia];
+        const v01 = segInnerVIdx[it][ia + 1];
+        const v11 = segInnerVIdx[it + 1][ia + 1];
+        arcIdx.push(v00, v10, v11, v00, v11, v01);
       }
     }
 
-    if (spliced) {
-      tipOuterPoly = newOuter;
-      mergedHoleIndices.add(hi);
-    } else {
-      tipInteriorHoles.push(hPts);
+    // Build outer arc surface
+    const segOuterVIdx: number[][] = [];
+    for (let it = 0; it <= GRID_T; it++) {
+      segOuterVIdx[it] = [];
+      for (let ia = 0; ia <= GRID_THETA; ia++) {
+        const theta = A * (ia / GRID_THETA);
+        const d_eq = BA_taper * (ia / GRID_THETA);
+        const tL = segTMin + segLeftSlope * Math.min(d_eq, segLeftAdjD);
+        const tR = segTMax + segRightSlope * Math.min(d_eq, segRightAdjD);
+        const t = tL + (tR - tL) * (it / GRID_T);
+        const v = arcOuter(t, theta);
+        const n = U3.clone().multiplyScalar(Math.sin(theta))
+          .add(W3.clone().multiplyScalar(-Math.cos(theta)));
+        segOuterVIdx[it][ia] = addArcV(v, n);
+      }
     }
-  }
 
-  // Create THREE.Shape from merged polygon
-  const tipShape = new THREE.Shape();
-  tipShape.moveTo(tipOuterPoly[0].x, tipOuterPoly[0].y);
-  for (let i = 1; i < tipOuterPoly.length; i++) {
-    tipShape.lineTo(tipOuterPoly[i].x, tipOuterPoly[i].y);
-  }
-  tipShape.closePath();
-
-  for (const ih of tipInteriorHoles) {
-    if (ih.length < 3) continue;
-    const holePath = new THREE.Path();
-    holePath.moveTo(ih[0].x, ih[0].y);
-    for (let i = 1; i < ih.length; i++) {
-      holePath.lineTo(ih[i].x, ih[i].y);
+    // Outer triangles (reversed winding)
+    for (let it = 0; it < GRID_T; it++) {
+      for (let ia = 0; ia < GRID_THETA; ia++) {
+        if (segCellOverlapsArcHole(it, ia)) continue;
+        const v00 = segOuterVIdx[it][ia];
+        const v10 = segOuterVIdx[it + 1][ia];
+        const v01 = segOuterVIdx[it][ia + 1];
+        const v11 = segOuterVIdx[it + 1][ia + 1];
+        arcIdx.push(v00, v11, v10, v00, v01, v11);
+      }
     }
-    holePath.closePath();
-    tipShape.holes.push(holePath);
-  }
 
-  const tipShapeGeo = new THREE.ShapeGeometry(tipShape);
-  const tipPositions = tipShapeGeo.getAttribute('position');
-  const tipShapeIndex = tipShapeGeo.getIndex();
-
-  // Map 2D (t,d) vertices to 3D for inner and outer surfaces
-  const tipInnerBase = tipVi;
-  for (let vi = 0; vi < tipPositions.count; vi++) {
-    const t_raw = tipPositions.getX(vi);
-    const d = tipPositions.getY(vi);
-    const t = taperT(t_raw, d);
-    addTipV(tipInner(t, d), nTipInner);
-  }
-  const tipOuterBase = tipVi;
-  for (let vi = 0; vi < tipPositions.count; vi++) {
-    const t_raw = tipPositions.getX(vi);
-    const d = tipPositions.getY(vi);
-    const t = taperT(t_raw, d);
-    addTipV(tipOuter(t, d), nTipOuter);
-  }
-
-  // Build index buffer from ShapeGeometry triangulation
-  if (tipShapeIndex) {
-    for (let i = 0; i < tipShapeIndex.count; i += 3) {
-      const a = tipShapeIndex.getX(i);
-      const b = tipShapeIndex.getX(i + 1);
-      const c = tipShapeIndex.getX(i + 2);
-      // Inner face
-      tipIdx.push(tipInnerBase + a, tipInnerBase + b, tipInnerBase + c);
-      // Outer face (reverse winding)
-      tipIdx.push(tipOuterBase + a, tipOuterBase + c, tipOuterBase + b);
+    // Left side surface
+    for (let i = 0; i < ARC_N; i++) {
+      const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+      const p0 = arcInner(cStep.tLI, cStep.ang);
+      const p1 = arcOuter(cStep.tLO, cStep.ang);
+      const p2 = arcInner(nStep.tLI, nStep.ang);
+      const p3 = arcOuter(nStep.tLO, nStep.ang);
+      const e1 = new THREE.Vector3().subVectors(p2, p0);
+      const e2 = new THREE.Vector3().subVectors(p1, p0);
+      const fN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+      const v0 = addArcV(p0, fN);
+      const v1 = addArcV(p1, fN);
+      const v2 = addArcV(p2, fN);
+      const v3 = addArcV(p3, fN);
+      arcIdx.push(v0, v1, v3, v0, v3, v2);
     }
-  }
-  tipShapeGeo.dispose();
 
-  // Side strips — merged outer polygon boundary
-  const tipMergedLocs = tipOuterPoly.map(p => ({ t: taperT(p.x, p.y), d: p.y }));
-  for (let i = 0; i < tipMergedLocs.length; i++) {
-    const j = (i + 1) % tipMergedLocs.length;
-    if (tipMergedLocs[i].d < DTOL && tipMergedLocs[j].d < DTOL) continue;
+    // Right side surface
+    for (let i = 0; i < ARC_N; i++) {
+      const cStep = arcSteps[i], nStep = arcSteps[i + 1];
+      const p0 = arcInner(cStep.tRI, cStep.ang);
+      const p1 = arcOuter(cStep.tRO, cStep.ang);
+      const p2 = arcInner(nStep.tRI, nStep.ang);
+      const p3 = arcOuter(nStep.tRO, nStep.ang);
+      const e1 = new THREE.Vector3().subVectors(p2, p0);
+      const e2 = new THREE.Vector3().subVectors(p1, p0);
+      const fN = new THREE.Vector3().crossVectors(e2, e1).normalize();
+      const v0 = addArcV(p0, fN);
+      const v1 = addArcV(p1, fN);
+      const v2 = addArcV(p2, fN);
+      const v3 = addArcV(p3, fN);
+      arcIdx.push(v0, v2, v3, v0, v3, v1);
+    }
 
-    const pII = tipInner(tipMergedLocs[i].t, tipMergedLocs[i].d);
-    const pIJ = tipInner(tipMergedLocs[j].t, tipMergedLocs[j].d);
-    const pOI = tipOuter(tipMergedLocs[i].t, tipMergedLocs[i].d);
-    const pOJ = tipOuter(tipMergedLocs[j].t, tipMergedLocs[j].d);
+    // Arc hole side walls
+    for (const holePts of segArcHoleLocs) {
+      for (let i = 0; i < holePts.length; i++) {
+        const j = (i + 1) % holePts.length;
+        const pII = arcInner(holePts[i].x, holePts[i].y);
+        const pIJ = arcInner(holePts[j].x, holePts[j].y);
+        const pOI = arcOuter(holePts[i].x, holePts[i].y);
+        const pOJ = arcOuter(holePts[j].x, holePts[j].y);
+        const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+        const e2 = new THREE.Vector3().subVectors(pOI, pII);
+        const sN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+        const sII = addArcV(pII, sN);
+        const sIJ = addArcV(pIJ, sN);
+        const sOJ = addArcV(pOJ, sN);
+        const sOI = addArcV(pOI, sN);
+        arcIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+      }
+    }
 
-    const e1 = new THREE.Vector3().subVectors(pIJ, pII);
-    const e2 = new THREE.Vector3().subVectors(pOI, pII);
-    const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+    // ── TIP for this segment ──
+    // Clip movPoly to segment t-range
+    let segTipPoly: Point2D[] = [...movPolyPts];
+    segTipPoly = clipPolygonByLine(segTipPoly, { x: segTMin, y: 0 }, { x: -1, y: 0 });
+    segTipPoly = clipPolygonByLine(segTipPoly, { x: segTMax, y: 0 }, { x: 1, y: 0 });
+    if (segTipPoly.length < 3) continue;
 
-    const sII = addTipV(pII, sideN);
-    const sIJ = addTipV(pIJ, sideN);
-    const sOJ = addTipV(pOJ, sideN);
-    const sOI = addTipV(pOI, sideN);
-    tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
-  }
+    // Taper for this segment
+    const segArcEndStep = arcSteps[ARC_N];
+    const seg_tL_end = segArcEndStep.tLI;
+    const seg_tR_end = segArcEndStep.tRI;
+    function segTaperT(t: number, d: number): number {
+      if (d < DTOL && segTMax > segTMin) {
+        const frac = (t - segTMin) / (segTMax - segTMin);
+        return seg_tL_end + frac * (seg_tR_end - seg_tL_end);
+      }
+      return t;
+    }
 
-  // Side strips — interior (non-merged) hole boundaries
-  for (let hi = 0; hi < holeLocs.length; hi++) {
-    if (mergedHoleIndices.has(hi)) continue;
-    const hLocs = holeLocs[hi];
-    for (let i = 0; i < hLocs.length; i++) {
-      const j = (i + 1) % hLocs.length;
-      if (hLocs[i].d < DTOL && hLocs[j].d < DTOL) continue;
-      const pII = tipInner(hLocs[i].t, hLocs[i].d);
-      const pIJ = tipInner(hLocs[j].t, hLocs[j].d);
-      const pOI = tipOuter(hLocs[i].t, hLocs[i].d);
-      const pOJ = tipOuter(hLocs[j].t, hLocs[j].d);
+    // Collect interior holes for this segment (not touching d=0 within segment)
+    const segTipHoles: Point2D[][] = [];
+    for (const hPts of tipHolePoly) {
+      let clipped = [...hPts];
+      clipped = clipPolygonByLine(clipped, { x: segTMin - 0.1, y: 0 }, { x: -1, y: 0 });
+      clipped = clipPolygonByLine(clipped, { x: segTMax + 0.1, y: 0 }, { x: 1, y: 0 });
+      if (clipped.length < 3) continue;
+      // Skip holes that touch d=0 within this segment (they caused the bend-line split)
+      const nearBend = clipped.filter(v => v.y < DTOL && v.x > segTMin - 0.1 && v.x < segTMax + 0.1);
+      if (nearBend.length >= 2) continue;
+      segTipHoles.push(clipped);
+    }
 
+    // Create THREE.Shape from clipped tip polygon
+    const segTipShape = new THREE.Shape();
+    segTipShape.moveTo(segTipPoly[0].x, segTipPoly[0].y);
+    for (let i = 1; i < segTipPoly.length; i++) {
+      segTipShape.lineTo(segTipPoly[i].x, segTipPoly[i].y);
+    }
+    segTipShape.closePath();
+
+    for (const ih of segTipHoles) {
+      if (ih.length < 3) continue;
+      const holePath = new THREE.Path();
+      holePath.moveTo(ih[0].x, ih[0].y);
+      for (let i = 1; i < ih.length; i++) {
+        holePath.lineTo(ih[i].x, ih[i].y);
+      }
+      holePath.closePath();
+      segTipShape.holes.push(holePath);
+    }
+
+    const segTipShapeGeo = new THREE.ShapeGeometry(segTipShape);
+    const segTipPositions = segTipShapeGeo.getAttribute('position');
+    const segTipShapeIndex = segTipShapeGeo.getIndex();
+
+    // Map 2D (t,d) vertices to 3D for inner and outer surfaces
+    const segTipInnerBase = tipVi;
+    for (let vi = 0; vi < segTipPositions.count; vi++) {
+      const t_raw = segTipPositions.getX(vi);
+      const d = segTipPositions.getY(vi);
+      const t = segTaperT(t_raw, d);
+      addTipV(tipInner(t, d), nTipInner);
+    }
+    const segTipOuterBase = tipVi;
+    for (let vi = 0; vi < segTipPositions.count; vi++) {
+      const t_raw = segTipPositions.getX(vi);
+      const d = segTipPositions.getY(vi);
+      const t = segTaperT(t_raw, d);
+      addTipV(tipOuter(t, d), nTipOuter);
+    }
+
+    if (segTipShapeIndex) {
+      for (let i = 0; i < segTipShapeIndex.count; i += 3) {
+        const a = segTipShapeIndex.getX(i);
+        const b = segTipShapeIndex.getX(i + 1);
+        const c = segTipShapeIndex.getX(i + 2);
+        tipIdx.push(segTipInnerBase + a, segTipInnerBase + b, segTipInnerBase + c);
+        tipIdx.push(segTipOuterBase + a, segTipOuterBase + c, segTipOuterBase + b);
+      }
+    }
+    segTipShapeGeo.dispose();
+
+    // Tip side walls — outer boundary
+    const segTipLocs = segTipPoly.map(p => ({ t: segTaperT(p.x, p.y), d: p.y }));
+    for (let i = 0; i < segTipLocs.length; i++) {
+      const j = (i + 1) % segTipLocs.length;
+      if (segTipLocs[i].d < DTOL && segTipLocs[j].d < DTOL) continue;
+      const pII = tipInner(segTipLocs[i].t, segTipLocs[i].d);
+      const pIJ = tipInner(segTipLocs[j].t, segTipLocs[j].d);
+      const pOI = tipOuter(segTipLocs[i].t, segTipLocs[i].d);
+      const pOJ = tipOuter(segTipLocs[j].t, segTipLocs[j].d);
       const e1 = new THREE.Vector3().subVectors(pIJ, pII);
       const e2 = new THREE.Vector3().subVectors(pOI, pII);
       const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
-
       const sII = addTipV(pII, sideN);
       const sIJ = addTipV(pIJ, sideN);
       const sOJ = addTipV(pOJ, sideN);
       const sOI = addTipV(pOI, sideN);
       tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
     }
-  }
+
+    // Tip side walls — interior holes
+    for (const hPts of segTipHoles) {
+      for (let i = 0; i < hPts.length; i++) {
+        const j = (i + 1) % hPts.length;
+        if (hPts[i].y < DTOL && hPts[j].y < DTOL) continue;
+        const pII = tipInner(hPts[i].x, hPts[i].y);
+        const pIJ = tipInner(hPts[j].x, hPts[j].y);
+        const pOI = tipOuter(hPts[i].x, hPts[i].y);
+        const pOJ = tipOuter(hPts[j].x, hPts[j].y);
+        const e1 = new THREE.Vector3().subVectors(pIJ, pII);
+        const e2 = new THREE.Vector3().subVectors(pOI, pII);
+        const sideN = new THREE.Vector3().crossVectors(e1, e2).normalize();
+        const sII = addTipV(pII, sideN);
+        const sIJ = addTipV(pIJ, sideN);
+        const sOJ = addTipV(pOJ, sideN);
+        const sOI = addTipV(pOI, sideN);
+        tipIdx.push(sII, sIJ, sOJ, sII, sOJ, sOI);
+      }
+    }
+  } // end per-segment loop
+
+  const arcGeo = new THREE.BufferGeometry();
+  arcGeo.setAttribute('position', new THREE.Float32BufferAttribute(arcVerts, 3));
+  arcGeo.setAttribute('normal', new THREE.Float32BufferAttribute(arcNormals, 3));
+  arcGeo.setIndex(arcIdx);
 
   const tipGeo = new THREE.BufferGeometry();
   tipGeo.setAttribute('position', new THREE.Float32BufferAttribute(tipVerts, 3));
