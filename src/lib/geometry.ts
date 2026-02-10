@@ -1332,17 +1332,71 @@ export function createFoldMesh(
   }
 
   // ── Split bend line by holes: remove intervals blocked by cutouts at d≈0 ──
+  // Use edge-intersection approach: find where cutout polygon edges cross the d=0 line
   const blocked: [number, number][] = [];
   for (const hPts of tipHolePoly) {
-    const nearBend = hPts.filter(v => v.y < DTOL);
-    if (nearBend.length >= 2) {
-      const bMin = Math.min(...nearBend.map(v => v.x));
-      const bMax = Math.max(...nearBend.map(v => v.x));
-      if (bMax > tMin && bMin < tMax) {
-        blocked.push([Math.max(bMin, tMin), Math.min(bMax, tMax)]);
+    const crossings: number[] = [];
+    const D_EPS = 0.05; // tolerance for "on the bend line"
+    for (let i = 0; i < hPts.length; i++) {
+      const j = (i + 1) % hPts.length;
+      const d1 = hPts[i].y, d2 = hPts[j].y;
+      // Snap near-zero d values to exactly 0 for robust crossing detection
+      const sd1 = Math.abs(d1) < D_EPS ? 0 : d1;
+      const sd2 = Math.abs(d2) < D_EPS ? 0 : d2;
+      if ((sd1 <= 0 && sd2 > 0) || (sd1 > 0 && sd2 <= 0)) {
+        const frac = sd1 === 0 ? 0 : (sd2 === 0 ? 1 : d1 / (d1 - d2));
+        const tCross = hPts[i].x + frac * (hPts[j].x - hPts[i].x);
+        crossings.push(tCross);
+      }
+    }
+    // Deduplicate nearby crossings and find blocked intervals
+    crossings.sort((a, b) => a - b);
+    const uniq: number[] = [];
+    for (const c of crossings) {
+      if (uniq.length === 0 || Math.abs(c - uniq[uniq.length - 1]) > 0.05) {
+        uniq.push(c);
+      }
+    }
+    if (uniq.length >= 2) {
+      // Pair crossings: use midpoint containment test to verify blocked
+      for (let k = 0; k + 1 < uniq.length; k++) {
+        const midT = (uniq[k] + uniq[k + 1]) / 2;
+        if (pointInPolygonInline(midT, 0, hPts) || pointInPolygonInline(midT, D_EPS * 0.5, hPts)) {
+          const bMin = uniq[k], bMax = uniq[k + 1];
+          if (bMax > tMin && bMin < tMax) {
+            blocked.push([Math.max(bMin, tMin), Math.min(bMax, tMax)]);
+          }
+        }
+      }
+    } else if (uniq.length === 0) {
+      // No crossings — check if bend line is entirely inside this cutout
+      if (pointInPolygonInline(tMin, 0, hPts) && pointInPolygonInline(tMax, 0, hPts)) {
+        blocked.push([tMin, tMax]);
       }
     }
   }
+
+  // Inline point-in-polygon for early use (before the main pointInPolygon is defined)
+  function pointInPolygonInline(px: number, py: number, poly: Point2D[]): boolean {
+    let inside = false;
+    for (let i = 0, j2 = poly.length - 1; i < poly.length; j2 = i++) {
+      const xi = poly[i].x, yi = poly[i].y;
+      const xj = poly[j2].x, yj = poly[j2].y;
+      if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+        inside = !inside;
+      }
+    }
+    return inside;
+  }
+
+  console.log('[FOLD-DEBUG]', {
+    tMin, tMax,
+    tipHolePolyCount: tipHolePoly.length,
+    tipHolePolyDValues: tipHolePoly.map(h => h.map(v => v.y.toFixed(4))),
+    tipHoleTValues: tipHolePoly.map(h => h.map(v => v.x.toFixed(4))),
+    blocked,
+    movingCutoutsCount: movingCutouts?.length ?? 0,
+  });
 
   let bendSegments: [number, number][];
   if (blocked.length === 0) {
