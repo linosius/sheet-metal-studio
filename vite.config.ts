@@ -26,7 +26,5 @@ export default defineConfig(({ mode }) => ({
     },
     dedupe: ["react", "react-dom", "react/jsx-runtime", "three", "@react-three/fiber"],
   },
-  optimizeDeps: {
-    exclude: ["opencascade.js"],
-  },
+  optimizeDeps: {},
 }));
