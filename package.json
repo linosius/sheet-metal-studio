@@ -53,6 +53,7 @@
     "input-otp": "^1.4.2",
     "lucide-react": "^0.462.0",
     "next-themes": "^0.3.0",
+    "opencascade.js": "^2.0.0-beta.b5ff984",
     "react": "^18.3.1",
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",
@@ -65,6 +66,8 @@
     "tailwindcss-animate": "^1.0.7",
     "three": "^0.170.0",
     "vaul": "^0.9.9",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

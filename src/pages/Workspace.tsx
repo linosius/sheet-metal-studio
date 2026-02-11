@@ -23,6 +23,7 @@ import {
   ProfileCutout, circleToPolygon, rectToPolygon,
 } from '@/lib/geometry';
 import { Point2D, generateId } from '@/lib/sheetmetal';
+import { initOCCT, isOCCTReady } from '@/lib/cadInit';
 import { toast } from 'sonner';
 import * as THREE from 'three';
 
@@ -30,6 +31,21 @@ export default function Workspace() {
   const navigate = useNavigate();
   const [currentStep, setCurrentStep] = useState<WorkflowStep>('sketch');
   const sketch = useSketchStore();
+  const [occtReady, setOcctReady] = useState(isOCCTReady());
+
+  // Initialize OCCT WASM in background
+  useEffect(() => {
+    if (!occtReady) {
+      initOCCT()
+        .then(() => setOcctReady(true))
+        .catch(err => {
+          console.error("[CAD] Failed to initialize OpenCascade:", err);
+          toast.error("CAD kernel failed to load", {
+            description: "3D modeling will use fallback geometry.",
+          });
+        });
+    }
+  }, [occtReady]);
 
   // 3D state
   const [profile, setProfile] = useState<Point2D[] | null>(null);
@@ -819,6 +835,7 @@ export default function Workspace() {
                   sketchSelectedIds={sketchSelectedIds}
                   onSketchSelectEntity={handleSketchSelectEntity}
                   cameraApiRef={cameraApiRef}
+                  useCADKernel={occtReady}
                 >
                   {activeFaceSketch && sketchFaceInfo && (
                     <FaceSketchToolbar
