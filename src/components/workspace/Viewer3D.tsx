@@ -16,6 +16,7 @@ import {
   ProfileCutout, getFixedCutouts,
   computeFoldLineInfo,
 } from '@/lib/geometry';
+import { buildBaseFace } from '@/lib/cadKernel';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
 interface SheetMetalMeshProps {
@@ -32,6 +33,7 @@ interface SheetMetalMeshProps {
   onSketchLineClick?: (lineId: string) => void;
   activeSketchFaceId?: string | null;
   cutouts?: ProfileCutout[];
+  useCADKernel?: boolean;
 }
 
 const noopRaycast = () => {};
@@ -329,19 +331,34 @@ function SheetMetalMesh({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds, interactionMode, onFaceClick,
   faceSketches, selectedSketchLineId, onSketchLineClick,
-  activeSketchFaceId, cutouts,
+  activeSketchFaceId, cutouts, useCADKernel,
 }: SheetMetalMeshProps) {
   const fixedProfile = useMemo(() => getFixedProfile(profile, folds, thickness), [profile, folds, thickness]);
   const fixedCutoutPolygons = useMemo(
     () => cutouts && cutouts.length > 0 ? getFixedCutouts(cutouts, folds, profile, thickness) : undefined,
     [cutouts, folds, profile, thickness],
   );
+
+  // ── CAD Kernel path: build base face via B-Rep (topologically correct) ──
+  const cadResult = useMemo(() => {
+    if (!useCADKernel) return null;
+    try {
+      const allCutoutPolys = cutouts && cutouts.length > 0
+        ? cutouts.map(c => c.polygon)
+        : undefined;
+      return buildBaseFace(fixedProfile, thickness, allCutoutPolys);
+    } catch (err) {
+      console.error("[CAD] buildBaseFace failed, falling back:", err);
+      return null;
+    }
+  }, [useCADKernel, fixedProfile, thickness, cutouts]);
+
+  // ── Fallback path: manual mesh construction ──
   const foldLineInfos = useMemo(() => {
+    if (cadResult) return []; // Skip when CAD kernel is active
     const bFolds = folds.filter(f => isBaseFaceFold(f));
     if (bFolds.length === 0) return [];
     const infos: ReturnType<typeof computeFoldLineInfo>[] = [];
-    // Pass ALL cutout polygons (not just moving-side) so blocked intervals
-    // are correctly detected even when a cutout straddles the fold line
     const allCutoutPolys = cutouts && cutouts.length > 0
       ? cutouts.map(c => c.polygon)
       : undefined;
@@ -350,20 +367,22 @@ function SheetMetalMesh({
       if (info) infos.push(info);
     }
     return infos;
-  }, [cutouts, folds, profile, thickness]);
+  }, [cadResult, cutouts, folds, profile, thickness]);
 
   const geometry = useMemo(() => {
+    if (cadResult) return cadResult.mesh;
     const validInfos = foldLineInfos.filter(Boolean) as NonNullable<typeof foldLineInfos[0]>[];
     return createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons, validInfos.length > 0 ? validInfos : undefined);
-  }, [fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
+  }, [cadResult, fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
+
   const edges = useMemo(
     () => getAllSelectableEdges(profile, thickness, flanges, folds),
     [profile, thickness, flanges, folds],
   );
-  const edgesGeometry = useMemo(
-    () => computeBoundaryEdges(fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos.length > 0 ? foldLineInfos : undefined),
-    [fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos],
-  );
+  const edgesGeometry = useMemo(() => {
+    if (cadResult) return cadResult.edges;
+    return computeBoundaryEdges(fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos.length > 0 ? foldLineInfos : undefined);
+  }, [cadResult, fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
 
   const edgeMap = useMemo(() => {
     const map = new Map<string, PartEdge>();
@@ -956,6 +975,7 @@ interface Viewer3DProps {
   onSketchLineClick?: (lineId: string) => void;
   children?: React.ReactNode;
   cutouts?: ProfileCutout[];
+  useCADKernel?: boolean;
   // Sketch plane props
   sketchPlaneActive?: boolean;
   sketchFaceId?: string | null;
@@ -980,7 +1000,7 @@ export function Viewer3D({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds = [], interactionMode = 'view', onFaceClick,
   faceSketches = [], selectedSketchLineId = null, onSketchLineClick,
-  children, cutouts,
+  children, cutouts, useCADKernel,
   sketchPlaneActive, sketchFaceId, sketchFaceOrigin,
   sketchFaceWidth, sketchFaceHeight,
   sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
@@ -1083,6 +1103,7 @@ export function Viewer3D({
           onSketchLineClick={onSketchLineClick}
           activeSketchFaceId={sketchPlaneActive ? sketchFaceId : null}
           cutouts={cutouts}
+          useCADKernel={useCADKernel}
         />
 
         {/* Sketch plane when active */}
