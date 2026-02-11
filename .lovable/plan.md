@@ -1,40 +1,111 @@
 
-# Fix: Remove Overlapping Geometry at Fold Junction
 
-## Problem
-The visible stripe at the fold-base junction is caused by **double geometry**: both the base face and the arc generate surfaces and boundary edge lines at the exact same location (the fold line at ang=0).
+# Fix: Robust Fold-Cutout Interaction (3 Architectural Changes)
 
-Specifically:
-- `buildBaseFaceManual` emits sidewall quads for bend-segment intervals on the fold line
-- The arc's side walls (left/right) at ang=0 cover the same area
-- `computeBoundaryEdges` emits top/bottom/vertical edge lines at the fold line
-- Arc boundary edges also emit inner-to-outer connectors at ang=0
+## Context
 
-Both create coplanar surfaces and doubled edge lines = visible stripe.
+The current fold+cutout system has three fundamental flaws that cause stripes, incorrect hole walls, and topology errors when cutouts (especially circles) cross a fold line. Additionally, the base fix from the previous session (always populating `foldLineInfos` even without cutouts) was NOT applied -- lines 339-348 of `Viewer3D.tsx` still early-return `[]` when cutouts are empty.
 
-## Solution
+---
 
-Two targeted changes in `src/lib/geometry.ts`:
+## Change 0 -- Always populate foldLineInfos (prerequisite, still missing)
 
-### 1. Remove base face sidewalls at fold lines
+**File**: `src/components/workspace/Viewer3D.tsx` (lines 339-348)
 
-In `buildBaseFaceManual` (around line 356): change the fold-line sidewall logic to **NOT** emit sidewalls for bend-segment intervals. The arc provides this closure. Only emit sidewalls for the GAPS (blocked intervals where cutouts cross the fold line).
+The `foldLineInfos` memo still has `if (!cutouts || cutouts.length === 0) return [];` and `if (info && info.blocked.length > 0)`. This means:
+- Without cutouts: foldLineInfos is empty, so ExtrudeGeometry is used (generates coplanar sidewalls = stripe)
+- With cutouts but no blocked intervals: same problem
 
-Current logic: `keep = clipIntervalByAllowed([t0,t1], bendSegments)` then emit quads for `keep`.
-New logic: **Skip sidewall emission entirely** for edges on fold lines where bend segments exist. The arc's side walls + base cap handle this boundary.
+**Fix**: Remove the early return. Always iterate over all base folds and always push the info (not just when blocked.length > 0). This ensures `buildBaseFaceManual` is always used when folds exist.
 
-### 2. Remove base face boundary edges at fold lines
+---
 
-In `computeBoundaryEdges` (around line 500): for edges on fold lines, **do NOT emit** top/bottom/vertical boundary edge lines for the bend-segment intervals. The arc boundary edges already cover this junction.
+## Change 1 -- Feed ALL cutouts into computeFoldLineInfo
 
-Current logic: emit `addEdge` for each `keep` interval on fold edges.
-New logic: Skip boundary edge emission for fold-line edges entirely (the arc boundary edges at ang=0 already draw the connecting lines there).
+**File**: `src/components/workspace/Viewer3D.tsx` (lines 343-346)
+
+Currently only `getMovingCutouts(cutouts, fold, ...)` is passed. When a circle straddles the fold line, the moving-side clip may produce a small sliver or nothing, causing `blocked` to be incomplete.
+
+**Fix**: Pass all cutout polygons (not just moving-side) to `computeFoldLineInfo`. The function's internal TD mapping (`toLocal`) and `computeFoldBlockedIntervalsTD` already handle arbitrary polygons crossing d=0 correctly -- they just need to see all of them.
+
+```
+// Before:
+const movCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
+computeFoldLineInfo(fold, profile, thickness, movCutouts)
+
+// After:
+const allCutoutPolys = cutouts.map(c => c.polygon);
+computeFoldLineInfo(fold, profile, thickness, allCutoutPolys)
+```
+
+---
+
+## Change 2 -- Hole sidewalls: detect "crosses fold line" not "lies on fold line"
+
+**File**: `src/lib/geometry.ts`, `buildBaseFaceManual` (lines 370-433) and `computeBoundaryEdges` (lines 471-496)
+
+Currently hole-edge suppression only triggers when BOTH endpoints satisfy `abs(d) < foldDTol`. For a circle approximated as 32 polygon segments, virtually no segment has both endpoints on the fold line. The fold line cuts THROUGH the circle, crossing segments.
+
+**Fix**: For each hole segment p0-p1, check if the segment **crosses** the fold line (d0 and d1 have different signs, or one is near zero). When a crossing is detected:
+- Split the segment at the intersection point
+- The sub-segment on the fold-line side (d near 0, within bend zone) should be suppressed (no sidewall/boundary emission)
+- The sub-segment on the fixed side should be emitted normally
+
+Specifically in `buildBaseFaceManual`:
+```
+// New logic for hole edges:
+for each hole segment p0->p1:
+  project to fold: d0, d1, t0, t1
+  if both |d| < tol:  // existing case: segment ON fold line
+    -> suppress using blocked/keep intervals (existing logic)
+  else if d0 * d1 < 0:  // NEW: segment CROSSES fold line
+    -> compute intersection point at d=0
+    -> emit sidewall only for the portion on fixed side (d > threshold)
+    -> skip the portion near d=0 (arc/fold mesh handles it)
+  else:
+    -> emit normally
+```
+
+Same logic applies to `computeBoundaryEdges` for hole loops.
+
+---
+
+## Change 3 -- Fold mesh generates curved hole walls in bend zone
+
+**File**: `src/lib/geometry.ts`, `createFoldMesh` (around lines 2221-2238)
+
+The fold mesh already generates arc-hole-walls for cutouts that overlap the arc zone (lines 2221-2238). However, this only works for the moving-side cutout pieces. The same curved hole-wall logic needs the full cutout polygons to correctly identify where the hole boundary enters and exits the bend zone.
+
+**Fix**: In `createFoldMesh`, also accept all cutout polygons (not just moving cutouts) for the hole-wall sweep. The existing `holeLocs` / `segArcHoleLocs` pipeline already handles clipping to the arc zone -- it just needs complete input.
+
+This is achieved by the same change as Change 1: passing all cutout polygons instead of just moving cutouts.
+
+In `Viewer3D.tsx` where `FoldMesh` receives `movingCutouts`:
+```
+// Before:
+const foldMovingCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
+
+// After:
+const foldAllCutouts = cutouts.map(c => c.polygon);
+```
+
+---
 
 ## Files Changed
-- `src/lib/geometry.ts`: Modify fold-line handling in both `buildBaseFaceManual` and `computeBoundaryEdges` to skip emission where the arc provides coverage.
+
+1. **`src/components/workspace/Viewer3D.tsx`**:
+   - `foldLineInfos` memo: remove early return, always compute for all base folds, always push (Change 0)
+   - `foldLineInfos` memo: pass all cutout polygons instead of moving-only (Change 1)
+   - `FoldMesh` rendering: pass all cutout polygons instead of moving-only (Change 3)
+
+2. **`src/lib/geometry.ts`**:
+   - `buildBaseFaceManual` hole sidewalls: add crossing detection with segment splitting (Change 2)
+   - `computeBoundaryEdges` hole loops: add crossing detection with segment splitting (Change 2)
 
 ## Why This Works
-- Removes the only source of coplanar double-geometry at the fold junction
-- Arc's left/right side walls already close the volume at the fold line boundary
-- Arc's boundary edges at ang=0 already draw the inner-to-outer connectors
-- No new geometry needed — just stop generating duplicate geometry
+
+- Change 0: Eliminates the stripe on simple folds (no cutouts) by always using the manual builder
+- Change 1: Ensures blocked intervals are correct regardless of cutout position relative to fold
+- Change 2: Correctly suppresses hole walls in the bend zone for circles/arcs where no segment "lies on" the fold line
+- Change 3: Ensures the fold mesh generates the curved replacement walls for the suppressed portions
+
