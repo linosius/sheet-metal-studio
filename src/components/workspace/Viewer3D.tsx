@@ -13,7 +13,7 @@ import {
   getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
   isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
   getFaceDimensions, FlangeTipClipLine,
-  ProfileCutout, getFixedCutouts, getMovingCutouts,
+  ProfileCutout, getFixedCutouts,
   computeFoldLineInfo,
 } from '@/lib/geometry';
 import { FaceSketchPlane } from './FaceSketchPlane';
@@ -337,13 +337,17 @@ function SheetMetalMesh({
     [cutouts, folds, profile, thickness],
   );
   const foldLineInfos = useMemo(() => {
-    if (!cutouts || cutouts.length === 0) return [];
-    const infos: ReturnType<typeof computeFoldLineInfo>[] = [];
     const bFolds = folds.filter(f => isBaseFaceFold(f));
+    if (bFolds.length === 0) return [];
+    const infos: ReturnType<typeof computeFoldLineInfo>[] = [];
+    // Pass ALL cutout polygons (not just moving-side) so blocked intervals
+    // are correctly detected even when a cutout straddles the fold line
+    const allCutoutPolys = cutouts && cutouts.length > 0
+      ? cutouts.map(c => c.polygon)
+      : undefined;
     for (const fold of bFolds) {
-      const movCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
-      const info = computeFoldLineInfo(fold, profile, thickness, movCutouts.length > 0 ? movCutouts : undefined);
-      if (info && info.blocked.length > 0) infos.push(info);
+      const info = computeFoldLineInfo(fold, profile, thickness, allCutoutPolys);
+      if (info) infos.push(info);
     }
     return infos;
   }, [cutouts, folds, profile, thickness]);
@@ -767,8 +771,10 @@ function SheetMetalMesh({
         const parentId = getFoldParentId(fold, folds, profile);
         const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
         const foldChildFolds = nonBaseFolds.filter(f => f.faceId === `fold_face_${fold.id}`);
-        const foldMovingCutouts = cutouts && cutouts.length > 0
-          ? getMovingCutouts(cutouts, fold, profile, thickness)
+        // Pass ALL cutout polygons so createFoldMesh can generate arc-hole-walls
+        // for cutouts that straddle the fold line (not just moving-side pieces)
+        const foldAllCutouts = cutouts && cutouts.length > 0
+          ? cutouts.map(c => c.polygon)
           : undefined;
 
         const mesh = (
@@ -783,7 +789,7 @@ function SheetMetalMesh({
             showLines={!isViewMode && !isEdgeMode}
             activeSketchFaceId={activeSketchFaceId}
             childFolds={foldChildFolds.length > 0 ? foldChildFolds : undefined}
-            movingCutouts={foldMovingCutouts && foldMovingCutouts.length > 0 ? foldMovingCutouts : undefined}
+            movingCutouts={foldAllCutouts && foldAllCutouts.length > 0 ? foldAllCutouts : undefined}
           />
         );
 

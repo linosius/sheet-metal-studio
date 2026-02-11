@@ -370,6 +370,7 @@ function buildBaseFaceManual(
   // ── Hole sidewalls ──
   let totalHoleEdges = 0;
   let holeFoldNearCount = 0;
+  let holeFoldCrossCount = 0;
   for (const holePoly of cutoutPolygons) {
     if (!holePoly || holePoly.length < 3) continue;
     for (let i = 0; i < holePoly.length; i++) {
@@ -382,11 +383,11 @@ function buildBaseFaceManual(
         const l0 = projectToFold(p0.x, p0.y, fl);
         const l1 = projectToFold(p1.x, p1.y, fl);
 
+        // Case 1: Both endpoints on fold line (existing logic)
         if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
           holeFoldNearCount++;
           const t0 = l0.t, t1 = l1.t;
 
-          // Derive blocked intervals: use fl.blocked directly, or complement of bendSegments
           let blocked = fl.blocked;
           if (!blocked || blocked.length === 0) {
             const b = mergeIntervalsForBase(fl.bendSegments ?? [], epsT);
@@ -399,7 +400,6 @@ function buildBaseFaceManual(
           }
 
           const blockedMerged = mergeIntervalsForBase(blocked, epsT);
-          // Keep = complement of blocked within edge's t-range
           const keep = complementIntervalsForBase(
             [Math.min(t0, t1), Math.max(t0, t1)],
             blockedMerged,
@@ -424,6 +424,33 @@ function buildBaseFaceManual(
           emitted = true;
           break;
         }
+
+        // Case 2: Segment CROSSES fold line (d0 and d1 have opposite signs)
+        // This handles circular cutouts where segments cross the fold line
+        if (l0.d * l1.d < 0) {
+          // Check if segment is within t-range of this fold
+          const tRange = [Math.min(l0.t, l1.t), Math.max(l0.t, l1.t)];
+          if (tRange[1] < fl.tMin - 1.0 || tRange[0] > fl.tMax + 1.0) continue;
+
+          holeFoldCrossCount++;
+          // Compute intersection point at d=0
+          const alpha = l0.d / (l0.d - l1.d); // 0..1 along p0->p1
+          const crossPt: Point2D = lerp2(p0, p1, alpha);
+
+          // The sub-segment near d=0 (within foldDTol of fold line) should be suppressed
+          // The sub-segment on the fixed side (away from fold) should be emitted
+          if (Math.abs(l0.d) > Math.abs(l1.d)) {
+            // p0 is on fixed side, p1 is near/crossing fold
+            // Emit p0 -> crossPt (fixed side), suppress crossPt -> p1 (bend zone)
+            emitSidewallEdge(p0, crossPt);
+          } else {
+            // p1 is on fixed side, p0 is near/crossing fold
+            // Suppress p0 -> crossPt (bend zone), emit crossPt -> p1 (fixed side)
+            emitSidewallEdge(crossPt, p1);
+          }
+          emitted = true;
+          break;
+        }
       }
 
       if (!emitted) {
@@ -431,7 +458,7 @@ function buildBaseFaceManual(
       }
     }
   }
-  console.warn("[BASE] hole edges", { total: totalHoleEdges, foldNear: holeFoldNearCount });
+  console.warn("[BASE] hole edges", { total: totalHoleEdges, foldNear: holeFoldNearCount, foldCross: holeFoldCrossCount });
 
   // ── 4) Build final geometry ──
   const out = mb.buildGeometry();
@@ -479,9 +506,31 @@ export function computeBoundaryEdges(
           const l0 = projectToFold(p0.x, p0.y, fl);
           const l1 = projectToFold(p1.x, p1.y, fl);
 
+          // Case 1: Both endpoints on fold line — suppress entirely
           if (Math.abs(l0.d) < foldDTol && Math.abs(l1.d) < foldDTol) {
-            // Edge lies on fold line → skip boundary edges entirely.
-            // The arc boundary edges at ang=0 already draw the connecting lines here.
+            handledByFold = true;
+            break;
+          }
+
+          // Case 2: Segment crosses fold line — split and only emit fixed-side portion
+          if (l0.d * l1.d < 0) {
+            const tRange = [Math.min(l0.t, l1.t), Math.max(l0.t, l1.t)];
+            if (tRange[1] < fl.tMin - 1.0 || tRange[0] > fl.tMax + 1.0) continue;
+
+            const alpha = l0.d / (l0.d - l1.d);
+            const crossPt: Point2D = { x: p0.x + (p1.x - p0.x) * alpha, y: p0.y + (p1.y - p0.y) * alpha };
+
+            if (Math.abs(l0.d) > Math.abs(l1.d)) {
+              // p0 is fixed side — emit p0->crossPt
+              addEdge(p0.x, p0.y, 0, crossPt.x, crossPt.y, 0);
+              addEdge(p0.x, p0.y, thickness, crossPt.x, crossPt.y, thickness);
+              addEdge(p0.x, p0.y, 0, p0.x, p0.y, thickness);
+            } else {
+              // p1 is fixed side — emit crossPt->p1
+              addEdge(crossPt.x, crossPt.y, 0, p1.x, p1.y, 0);
+              addEdge(crossPt.x, crossPt.y, thickness, p1.x, p1.y, thickness);
+              addEdge(p1.x, p1.y, 0, p1.x, p1.y, thickness);
+            }
             handledByFold = true;
             break;
           }
@@ -1521,7 +1570,7 @@ export function computeFoldLineInfo(
   fold: Fold,
   profile: Point2D[],
   thickness: number,
-  movingCutouts?: Point2D[][],
+  cutoutPolygons?: Point2D[][],
 ): {
   linePoint: Point2D; tangent: Point2D; normal: Point2D;
   tMin: number; tMax: number;
@@ -1558,10 +1607,10 @@ export function computeFoldLineInfo(
   const tMin = Math.min(...foldTs);
   const tMax = Math.max(...foldTs);
 
-  // Convert moving cutouts to TD space using the SAME toLocal mapping
+  // Convert all cutout polygons to TD space using the SAME toLocal mapping
   let cutoutsTD: Point2D[][] = [];
-  if (movingCutouts && movingCutouts.length > 0) {
-    for (const cutPoly of movingCutouts) {
+  if (cutoutPolygons && cutoutPolygons.length > 0) {
+    for (const cutPoly of cutoutPolygons) {
       const locs = cutPoly.map(p => toLocal(p));
       if (locs.length >= 3) {
         cutoutsTD.push(locs.map(l => ({ x: l.t, y: l.d })));
