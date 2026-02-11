@@ -1,111 +1,120 @@
 
+# Umbau auf parametrisches Modell mit OpenCascade.js CAD-Kernel
 
-# Fix: Robust Fold-Cutout Interaction (3 Architectural Changes)
+## Warum der Umbau notwendig ist
 
-## Context
+Das aktuelle System baut 3D-Geometrie direkt als Dreiecks-Meshes auf (~2.865 Zeilen in `geometry.ts`). Jede Interaktion zwischen Folds und Cutouts erfordert manuelle Topologie-Hacks (Sidewall-Suppression, Crossing-Detection, Arc-Hole-Walls). Diese Hacks versagen bei Kreisen, schraegen Folds und komplexen Kombinationen, weil das System kein topologisches Modell hat -- es arbeitet nur mit Dreiecken und Polygonen.
 
-The current fold+cutout system has three fundamental flaws that cause stripes, incorrect hole walls, and topology errors when cutouts (especially circles) cross a fold line. Additionally, the base fix from the previous session (always populating `foldLineInfos` even without cutouts) was NOT applied -- lines 339-348 of `Viewer3D.tsx` still early-return `[]` when cutouts are empty.
+Ein CAD-Kernel wie OpenCascade (OCCT) arbeitet mit **B-Rep** (Boundary Representation): Faces, Edges und Vertices als topologische Entitaeten. Operationen wie Extrusion, Boolean-Cut und Biegung sind mathematisch exakt. Das Mesh wird erst am Ende fuer die Visualisierung erzeugt (Tessellation).
 
----
+## Technologie-Wahl: OpenCascade.js
 
-## Change 0 -- Always populate foldLineInfos (prerequisite, still missing)
+**opencascade.js** ist ein WASM-Port der OpenCascade-Bibliothek (die auch FreeCAD und andere professionelle CAD-Tools verwenden). Es bietet:
 
-**File**: `src/components/workspace/Viewer3D.tsx` (lines 339-348)
+- `BRepPrimAPI_MakePrism`: Extrusion eines 2D-Profils zu einem Solid
+- `BRepAlgoAPI_Cut`: Boolean-Subtraktion fuer Cutouts (immer topologisch korrekt)
+- `BRepBuilderAPI_Transform`: Geometrische Transformationen
+- `BRepMesh_IncrementalMesh`: Tessellation zu Dreiecken fuer Three.js
+- `BRepFilletAPI_MakeFillet`: Verrundungen
 
-The `foldLineInfos` memo still has `if (!cutouts || cutouts.length === 0) return [];` and `if (info && info.blocked.length > 0)`. This means:
-- Without cutouts: foldLineInfos is empty, so ExtrudeGeometry is used (generates coplanar sidewalls = stripe)
-- With cutouts but no blocked intervals: same problem
+**Groesse**: ~30MB WASM (kann mit Custom Build auf ~5-10MB reduziert werden). Wird asynchron geladen.
 
-**Fix**: Remove the early return. Always iterate over all base folds and always push the info (not just when blocked.length > 0). This ensures `buildBaseFaceManual` is always used when folds exist.
+## Architektur-Uebersicht
 
----
-
-## Change 1 -- Feed ALL cutouts into computeFoldLineInfo
-
-**File**: `src/components/workspace/Viewer3D.tsx` (lines 343-346)
-
-Currently only `getMovingCutouts(cutouts, fold, ...)` is passed. When a circle straddles the fold line, the moving-side clip may produce a small sliver or nothing, causing `blocked` to be incomplete.
-
-**Fix**: Pass all cutout polygons (not just moving-side) to `computeFoldLineInfo`. The function's internal TD mapping (`toLocal`) and `computeFoldBlockedIntervalsTD` already handle arbitrary polygons crossing d=0 correctly -- they just need to see all of them.
-
-```
-// Before:
-const movCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
-computeFoldLineInfo(fold, profile, thickness, movCutouts)
-
-// After:
-const allCutoutPolys = cutouts.map(c => c.polygon);
-computeFoldLineInfo(fold, profile, thickness, allCutoutPolys)
+```text
++------------------+     +-------------------+     +------------------+
+|  2D Sketch       | --> |  CAD Kernel       | --> |  Three.js        |
+|  (besteht)       |     |  (NEU)            |     |  Viewer          |
+|                  |     |                   |     |  (vereinfacht)   |
+|  SketchEntities  |     |  B-Rep Solid      |     |  Tessellation    |
+|  Fold-Defs       |     |  Boolean Ops      |     |  -> Mesh         |
+|  Cutout-Defs     |     |  Bend/Transform   |     |  -> Edges        |
++------------------+     +-------------------+     +------------------+
 ```
 
----
+## Implementierungsplan (4 Phasen)
 
-## Change 2 -- Hole sidewalls: detect "crosses fold line" not "lies on fold line"
+### Phase 1: OpenCascade.js Integration + Base Face (Grundlage)
 
-**File**: `src/lib/geometry.ts`, `buildBaseFaceManual` (lines 370-433) and `computeBoundaryEdges` (lines 471-496)
+**Neue Dateien:**
+- `src/lib/cadKernel.ts` -- Wrapper um OpenCascade.js API
+- `src/lib/cadInit.ts` -- Asynchrones Laden des WASM-Moduls
 
-Currently hole-edge suppression only triggers when BOTH endpoints satisfy `abs(d) < foldDTol`. For a circle approximated as 32 polygon segments, virtually no segment has both endpoints on the fold line. The fold line cuts THROUGH the circle, crossing segments.
+**Aenderungen:**
+- `package.json`: `opencascade.js` als Dependency hinzufuegen
+- `vite.config.ts`: WASM-Support konfigurieren (Copy Plugin fuer .wasm Dateien)
 
-**Fix**: For each hole segment p0-p1, check if the segment **crosses** the fold line (d0 and d1 have different signs, or one is near zero). When a crossing is detected:
-- Split the segment at the intersection point
-- The sub-segment on the fold-line side (d near 0, within bend zone) should be suppressed (no sidewall/boundary emission)
-- The sub-segment on the fixed side should be emitted normally
+**Kernfunktionen in `cadKernel.ts`:**
+1. `initOCCT()` -- WASM laden, Singleton-Instanz bereitstellen
+2. `createSheetFromProfile(profile, thickness)` -- 2D-Profil zu `TopoDS_Shape` extrudieren
+3. `cutHoles(solid, cutouts[])` -- Boolean-Subtraktion fuer alle Cutouts
+4. `tessellate(shape)` -- B-Rep zu Three.js BufferGeometry konvertieren
+5. `extractEdges(shape)` -- Topologische Kanten extrahieren fuer Boundary-Lines
 
-Specifically in `buildBaseFaceManual`:
-```
-// New logic for hole edges:
-for each hole segment p0->p1:
-  project to fold: d0, d1, t0, t1
-  if both |d| < tol:  // existing case: segment ON fold line
-    -> suppress using blocked/keep intervals (existing logic)
-  else if d0 * d1 < 0:  // NEW: segment CROSSES fold line
-    -> compute intersection point at d=0
-    -> emit sidewall only for the portion on fixed side (d > threshold)
-    -> skip the portion near d=0 (arc/fold mesh handles it)
-  else:
-    -> emit normally
-```
+**Was das ersetzt:** `createBaseFaceMesh`, `buildBaseFaceManual`, `computeBoundaryEdges`, `profileToShape`, alle Sidewall-Logik (~500 Zeilen)
 
-Same logic applies to `computeBoundaryEdges` for hole loops.
+### Phase 2: Fold/Bend als B-Rep-Operation
 
----
+**Neue Funktionen in `cadKernel.ts`:**
+1. `applyBend(solid, foldLine, angle, radius, thickness)` -- Solid an der Foldlinie teilen, Biegezone als Sweep erzeugen, Teile zusammenfuegen
+2. `splitSolidAtLine(solid, linePoint, lineNormal)` -- Solid mit einer Ebene teilen (BRepAlgoAPI_Section + BRepAlgoAPI_Cut)
 
-## Change 3 -- Fold mesh generates curved hole walls in bend zone
-
-**File**: `src/lib/geometry.ts`, `createFoldMesh` (around lines 2221-2238)
-
-The fold mesh already generates arc-hole-walls for cutouts that overlap the arc zone (lines 2221-2238). However, this only works for the moving-side cutout pieces. The same curved hole-wall logic needs the full cutout polygons to correctly identify where the hole boundary enters and exits the bend zone.
-
-**Fix**: In `createFoldMesh`, also accept all cutout polygons (not just moving cutouts) for the hole-wall sweep. The existing `holeLocs` / `segArcHoleLocs` pipeline already handles clipping to the arc zone -- it just needs complete input.
-
-This is achieved by the same change as Change 1: passing all cutout polygons instead of just moving cutouts.
-
-In `Viewer3D.tsx` where `FoldMesh` receives `movingCutouts`:
-```
-// Before:
-const foldMovingCutouts = getMovingCutouts(cutouts, fold, profile, thickness);
-
-// After:
-const foldAllCutouts = cutouts.map(c => c.polygon);
+**Algorithmus fuer Bend:**
+```text
+1. Ebene definieren an der Foldlinie
+2. Solid in Fixed + Moving teilen (BRepAlgoAPI_Cut mit Half-Space)
+3. Moving-Teil um Biegeachse rotieren (gp_Trsf Rotation)
+4. Biegezone erzeugen: 
+   - Querschnitt an der Foldlinie extrahieren
+   - Entlang Kreisbogen sweepen (BRepOffsetAPI_MakePipe oder manuell)
+5. Alle 3 Teile vereinigen (BRepAlgoAPI_Fuse)
+6. Cutouts die durch die Biegezone gehen werden automatisch
+   korrekt behandelt -- die Boolean-Ops arbeiten auf der Topologie
 ```
 
----
+**Was das ersetzt:** `createFoldMesh` (~700 Zeilen), `computeFoldBlockedIntervalsTD`, `complementIntervals`, `computeFoldLineInfo`, `getFixedProfile`, `getMovingCutouts`, `getFixedCutouts`, alle Segment-basierte Topologie-Logik (~1.500 Zeilen)
 
-## Files Changed
+### Phase 3: Flanges + Viewer-Vereinfachung
 
-1. **`src/components/workspace/Viewer3D.tsx`**:
-   - `foldLineInfos` memo: remove early return, always compute for all base folds, always push (Change 0)
-   - `foldLineInfos` memo: pass all cutout polygons instead of moving-only (Change 1)
-   - `FoldMesh` rendering: pass all cutout polygons instead of moving-only (Change 3)
+**Aenderungen in `cadKernel.ts`:**
+1. `applyFlange(solid, edgeId, height, angle, radius)` -- Flange als Bend an einer Kante
 
-2. **`src/lib/geometry.ts`**:
-   - `buildBaseFaceManual` hole sidewalls: add crossing detection with segment splitting (Change 2)
-   - `computeBoundaryEdges` hole loops: add crossing detection with segment splitting (Change 2)
+**Aenderungen in `Viewer3D.tsx`:**
+- Drastische Vereinfachung: Statt separate `FlangeMesh`, `FoldMesh`, `BaseFaceMesh` Komponenten wird ein einzelnes tesselliertes Mesh gerendert
+- Edge-Highlighting direkt aus der B-Rep-Topologie
+- Face-Selection ueber topologische Face-IDs
 
-## Why This Works
+**Was das ersetzt:** `createFlangeMesh` (~200 Zeilen), `FlangeMesh` + `FoldMesh` Komponenten in Viewer3D.tsx
 
-- Change 0: Eliminates the stripe on simple folds (no cutouts) by always using the manual builder
-- Change 1: Ensures blocked intervals are correct regardless of cutout position relative to fold
-- Change 2: Correctly suppresses hole walls in the bend zone for circles/arcs where no segment "lies on" the fold line
-- Change 3: Ensures the fold mesh generates the curved replacement walls for the suppressed portions
+### Phase 4: Unfold aus B-Rep
 
+**Aenderungen in `cadKernel.ts`:**
+1. `unfoldSheet(solid, bendInfo[])` -- Flat Pattern aus dem B-Rep berechnen
+   - Biegezonenlaenge ueber Bend Allowance (bestehende Formel)
+   - Faces ruecktransformieren in die Ebene
+
+**Was das ersetzt:** `src/lib/unfold.ts` (~200 Zeilen)
+
+## Dateien die sich aendern
+
+| Datei | Aenderung |
+|---|---|
+| `package.json` | +opencascade.js Dependency |
+| `vite.config.ts` | WASM Config |
+| `src/lib/cadKernel.ts` | NEU: Gesamter CAD-Kernel-Wrapper |
+| `src/lib/cadInit.ts` | NEU: Async WASM Loader |
+| `src/lib/geometry.ts` | Schrittweise ersetzen, am Ende ~500 Zeilen statt ~2.865 |
+| `src/components/workspace/Viewer3D.tsx` | Drastisch vereinfacht (~400 Zeilen statt ~1.269) |
+| `src/lib/unfold.ts` | Vereinfacht, nutzt cadKernel |
+| `src/pages/Workspace.tsx` | Loading-State fuer WASM-Init |
+
+## Risiken und Einschraenkungen
+
+1. **WASM Bundle-Groesse**: ~30MB Download beim ersten Laden (kann mit Custom Build reduziert werden, aber nicht in Lovable moeglich -- muss als fertiges npm-Paket verwendet werden)
+2. **Ladezeit**: OCCT-Initialisierung dauert 2-5 Sekunden -- braucht Loading-Indikator
+3. **Sheet Metal Bending**: OCCT hat keine native Sheet-Metal-API. Biegung muss als Split + Rotate + Sweep implementiert werden. Das ist aber deutlich robuster als der aktuelle Mesh-Ansatz, weil Boolean-Ops die Topologie korrekt handhaben.
+4. **Umfang**: Dies ist ein grosser Umbau. Empfehlung: Phase 1 zuerst implementieren und testen, dann schrittweise weiter.
+
+## Empfohlene Reihenfolge
+
+Phase 1 allein loest bereits das Cutout-Problem fuer die Base Face und beweist, dass der Ansatz funktioniert. Die Fold-Logik (Phase 2) ist der kritischste und aufwaendigste Teil, profitiert aber am meisten vom CAD-Kernel, weil die Boolean-Ops Cutouts an der Biegezone automatisch korrekt teilen.
