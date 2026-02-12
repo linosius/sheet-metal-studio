@@ -242,7 +242,7 @@ function SheetMetalMesh({
       >
         <meshStandardMaterial
           color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#d4d8dd'}
-          metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
+          metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
         />
       </mesh>
       {!isViewMode && <MeshEdgeOutline geometry={modelResult.baseFace} />}
@@ -279,7 +279,7 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
               />
             </mesh>
             {!isViewMode && <MeshEdgeOutline geometry={fold.arc} />}
@@ -300,7 +300,7 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
               />
             </mesh>
             {!isViewMode && <MeshEdgeOutline geometry={fold.tip} />}
@@ -332,7 +332,7 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
               />
             </mesh>
             {!isViewMode && <MeshEdgeOutline geometry={flange.mesh} />}
