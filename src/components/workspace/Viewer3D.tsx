@@ -224,7 +224,7 @@ function SheetMetalMesh({
       <mesh
         geometry={modelResult.baseFace}
         userData={{ faceType: 'base' }}
-        castShadow receiveShadow
+        
         raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot' || isFoldMode) ? noopRaycast as any : undefined}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
@@ -273,7 +273,7 @@ function SheetMetalMesh({
             <mesh
               geometry={fold.arc}
               userData={{ faceId: foldFaceId }}
-              castShadow receiveShadow
+              
               raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
             >
               <meshStandardMaterial
@@ -285,7 +285,7 @@ function SheetMetalMesh({
             <mesh
               geometry={fold.tip}
               userData={{ faceId: foldFaceId }}
-              castShadow receiveShadow
+              
               raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
@@ -317,7 +317,7 @@ function SheetMetalMesh({
             <mesh
               geometry={flange.mesh}
               userData={{ faceId: flangeFaceId }}
-              castShadow receiveShadow
+              
               raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
@@ -519,15 +519,8 @@ function SceneSetup() {
   return (
     <>
       <InventorBackground />
-      <ambientLight intensity={0.7} />
-      <directionalLight
-        position={[80, 120, 100]}
-        intensity={1.2}
-        castShadow
-        shadow-mapSize-width={1024}
-        shadow-mapSize-height={1024}
-        shadow-bias={-0.002}
-      />
+      <ambientLight intensity={0.9} />
+      <directionalLight position={[80, 120, 100]} intensity={0.8} />
       <directionalLight position={[-60, -40, 80]} intensity={0.35} />
       <directionalLight position={[0, 60, -50]} intensity={0.2} />
       <hemisphereLight args={['#dce4ed', '#8a9bb0', 0.3]} />
@@ -654,7 +647,7 @@ export function Viewer3D({
         </div>
       )}
 
-      <Canvas shadows>
+      <Canvas>
         <PerspectiveCamera makeDefault position={defaultPos} fov={45} near={0.1} far={10000} />
         <SceneSetup />
         <CameraApi apiRef={cameraApi} defaultPos={defaultPos} defaultTarget={defaultTarget} />
