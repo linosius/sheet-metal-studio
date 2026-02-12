@@ -519,7 +519,7 @@ function SceneSetup() {
   return (
     <>
       <InventorBackground />
-      <ambientLight intensity={0.4} />
+      <ambientLight intensity={0.7} />
       <directionalLight
         position={[80, 120, 100]}
         intensity={1.2}
