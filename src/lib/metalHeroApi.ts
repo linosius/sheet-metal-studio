@@ -121,14 +121,8 @@ export function meshDataToBufferGeometry(data: MeshData): THREE.BufferGeometry {
   if (data.indices && data.indices.length > 0) {
     geo.setIndex(data.indices);
   }
-  if (data.normals && data.normals.length > 0) {
-    geo.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
-  } else {
-    geo.computeVertexNormals();
-  }
-  if (data.indices && data.indices.length > 0) {
-    geo.setIndex(data.indices);
-  }
+  // Always compute normals – API normals may be missing, zero, or inverted
+  geo.computeVertexNormals();
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
   return geo;
