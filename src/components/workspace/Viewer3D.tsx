@@ -170,18 +170,8 @@ function SheetMetalMesh({
   const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
   const baseFolds = useMemo(() => folds.filter(f => isBaseFaceFold(f)), [folds]);
 
-  const nonSelectableEdgeIds = useMemo(() => {
-    const ids = new Set<string>();
-    baseFolds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
-    for (const edge of edges) {
-      if (isEdgeOnFoldLine(edge, baseFolds, profile)) ids.add(edge.id);
-      if (edge.id.includes('_side_s_fold_') || edge.id.includes('_side_e_fold_') ||
-          edge.id.includes('_tip_outer_fold_') || edge.id.includes('_tip_inner_fold_')) {
-        ids.add(edge.id);
-      }
-    }
-    return ids;
-  }, [baseFolds, edges, profile]);
+  // All edges are now selectable — no filtering
+  const nonSelectableEdgeIds = useMemo(() => new Set<string>(), []);
 
   // Base face entities for sketch visualization
   const allEntities = useMemo(() => {
@@ -275,6 +265,15 @@ function SheetMetalMesh({
               userData={{ faceId: foldFaceId }}
               
               raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
+              onClick={(e) => {
+                if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
+              }}
+              onPointerOver={() => {
+                if (isSketchMode) { document.body.style.cursor = 'pointer'; setHoveredFaceId(foldFaceId); }
+              }}
+              onPointerOut={() => {
+                if (isSketchMode) { document.body.style.cursor = 'default'; setHoveredFaceId(null); }
+              }}
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
