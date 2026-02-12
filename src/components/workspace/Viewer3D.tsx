@@ -217,6 +217,7 @@ function SheetMetalMesh({
         
         raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot' || isFoldMode) ? noopRaycast as any : undefined}
         onClick={(e) => {
+          console.log('[BaseFace] clicked, isSketchMode:', isSketchMode, 'onFaceClick:', !!onFaceClick, 'intersections:', e.intersections.length, e.intersections.map(i => i.object.userData));
           if (isSketchMode && onFaceClick) {
             const closest = e.intersections[0];
             if (closest && closest.object.userData?.faceId) return;
@@ -266,6 +267,7 @@ function SheetMetalMesh({
               
               raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
               onClick={(e) => {
+                console.log('[FoldArc] clicked, faceId:', foldFaceId, 'isSketchMode:', isSketchMode);
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
               }}
               onPointerOver={() => {

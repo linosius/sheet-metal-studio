@@ -163,6 +163,7 @@ export default function Workspace() {
 
   // ── Face click handler — uses face registry for camera positioning ──
   const handleFaceClick = useCallback((faceId: string) => {
+    console.log('[Workspace] handleFaceClick:', faceId, 'subMode:', subMode, 'step:', currentStep, 'activeFaceSketch:', activeFaceSketch);
     if (subMode !== 'sketch' || currentStep !== 'fold-flanges') return;
     if (activeFaceSketch) return;
 
