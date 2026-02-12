@@ -208,7 +208,8 @@ function SheetMetalMesh({
     return { width: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) };
   }, [profile]);
 
-  const [baseFaceHovered, setBaseFaceHovered] = useState(false);
+   const [baseFaceHovered, setBaseFaceHovered] = useState(false);
+  const [hoveredFaceId, setHoveredFaceId] = useState<string | null>(null);
 
   const isSketchMode = interactionMode === 'sketch';
   const isFoldMode = interactionMode === 'fold';
@@ -264,28 +265,39 @@ function SheetMetalMesh({
       {/* Fold meshes from API */}
       {modelResult.folds.map(fold => {
         const foldFaceId = `fold_face_${fold.id}`;
+        const isHovered = hoveredFaceId === foldFaceId;
+        const isActive = activeSketchFaceId === foldFaceId;
         return (
           <group key={fold.id}>
             <mesh
               geometry={fold.arc}
               userData={{ faceId: foldFaceId }}
-              raycast={(activeSketchFaceId === foldFaceId || isFoldMode) ? noopRaycast as any : undefined}
-              onClick={(e) => {
-                if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
-              }}
+              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
             >
-              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
+              <meshStandardMaterial
+                color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+              />
             </mesh>
             <MeshEdgeOutline geometry={fold.arc} />
             <mesh
               geometry={fold.tip}
               userData={{ faceId: foldFaceId }}
-              raycast={(activeSketchFaceId === foldFaceId || isFoldMode) ? noopRaycast as any : undefined}
+              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
               }}
+              onPointerOver={() => {
+                if (isSketchMode) { document.body.style.cursor = 'pointer'; setHoveredFaceId(foldFaceId); }
+              }}
+              onPointerOut={() => {
+                if (isSketchMode) { document.body.style.cursor = 'default'; setHoveredFaceId(null); }
+              }}
             >
-              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
+              <meshStandardMaterial
+                color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+              />
             </mesh>
             <MeshEdgeOutline geometry={fold.tip} />
           </group>
@@ -295,17 +307,28 @@ function SheetMetalMesh({
       {/* Flange meshes from API */}
       {modelResult.flanges.map(flange => {
         const flangeFaceId = `flange_face_${flange.id}`;
+        const isHovered = hoveredFaceId === flangeFaceId;
+        const isActive = activeSketchFaceId === flangeFaceId;
         return (
           <group key={flange.id}>
             <mesh
               geometry={flange.mesh}
               userData={{ faceId: flangeFaceId }}
-              raycast={(activeSketchFaceId === flangeFaceId || isFoldMode) ? noopRaycast as any : undefined}
+              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
               }}
+              onPointerOver={() => {
+                if (isSketchMode) { document.body.style.cursor = 'pointer'; setHoveredFaceId(flangeFaceId); }
+              }}
+              onPointerOut={() => {
+                if (isSketchMode) { document.body.style.cursor = 'default'; setHoveredFaceId(null); }
+              }}
             >
-              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
+              <meshStandardMaterial
+                color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+              />
             </mesh>
             <MeshEdgeOutline geometry={flange.mesh} />
           </group>
