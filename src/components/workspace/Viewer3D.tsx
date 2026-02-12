@@ -1,23 +1,20 @@
-import { useMemo, useRef, useEffect, useState } from 'react';
+import { useMemo, useRef, useEffect, useState, useCallback } from 'react';
 import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, GizmoHelper, GizmoViewcube, Grid, PerspectiveCamera, Line } from '@react-three/drei';
 import * as THREE from 'three';
-import { Home, Bug } from 'lucide-react';
+import { Home, Bug, Loader2 } from 'lucide-react';
 import { Point2D } from '@/lib/sheetmetal';
 import {
-  createBaseFaceMesh, createFlangeMesh, createFoldMesh, computeBendLinePositions,
-  computeFoldBendLines, computeBoundaryEdges,
-  getAllSelectableEdges, PartEdge, Flange, Fold, FaceSketch,
+  PartEdge, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchCircle, FaceSketchRect, FaceSketchEntity, FaceSketchTool,
-  classifySketchLineAsFold, isEdgeOnFoldLine,
-  getFixedProfile, computeFoldEdge, getFoldParentId, getFoldNormal,
-  isBaseFaceFold, makeVirtualProfile, computeFlangeFaceTransform, computeFoldFaceTransform,
-  getFaceDimensions, FlangeTipClipLine,
-  ProfileCutout, getFixedCutouts,
-  computeFoldLineInfo,
+  classifySketchLineAsFold, isEdgeOnFoldLine, isBaseFaceFold,
+  ProfileCutout,
 } from '@/lib/geometry';
-import { buildBaseFace } from '@/lib/cadKernel';
+import { buildModel, BuildModelResult } from '@/lib/metalHeroApi';
+import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge } from '@/lib/faceRegistry';
 import { FaceSketchPlane } from './FaceSketchPlane';
+
+// ========== Types ==========
 
 interface SheetMetalMeshProps {
   profile: Point2D[];
@@ -33,209 +30,20 @@ interface SheetMetalMeshProps {
   onSketchLineClick?: (lineId: string) => void;
   activeSketchFaceId?: string | null;
   cutouts?: ProfileCutout[];
-  useCADKernel?: boolean;
+  kFactor: number;
+  modelResult: BuildModelResult | null;
+  modelLoading: boolean;
 }
 
 const noopRaycast = () => {};
 
-function FlangeMesh({ edge, flange, thickness, isSketchMode, isFoldMode, onFaceClick, showLines = true, activeSketchFaceId, childFolds }: {
-  edge: PartEdge; flange: Flange; thickness: number;
-  isSketchMode?: boolean; isFoldMode?: boolean; onFaceClick?: (faceId: string) => void;
-  showLines?: boolean; activeSketchFaceId?: string | null;
-  childFolds?: Fold[];
-}) {
-  const isActiveSketch = activeSketchFaceId === `flange_face_${flange.id}`;
-  const [hovered, setHovered] = useState(false);
-
-  // Build clip lines from child folds for tip clipping
-  const clipLines = useMemo((): FlangeTipClipLine[] | undefined => {
-    if (!childFolds || childFolds.length === 0) return undefined;
-    const edgeLen = edge.start.distanceTo(edge.end);
-    return childFolds.map(cf => {
-      const normal = getFoldNormal(cf, edgeLen, flange.height);
-      return {
-        lineStart: cf.lineStart,
-        lineEnd: cf.lineEnd,
-        normal,
-      };
-    });
-  }, [childFolds, edge, flange.height]);
-
-  const flangeResult = useMemo(() => createFlangeMesh(edge, flange, thickness, clipLines), [edge, flange, thickness, clipLines]);
-  const geometry = flangeResult.mesh;
-  const edgesGeo = useMemo(() => {
-    if (!geometry || !geometry.attributes.position || geometry.attributes.position.count === 0) return null;
-    return flangeResult.boundaryEdges;
-  }, [flangeResult, geometry]);
-  const bendLines = useMemo(() => {
-    const { bendStart, bendEnd } = computeBendLinePositions(edge, flange, thickness);
-    const toTuples = (pts: THREE.Vector3[]) =>
-      pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
-    return { start: toTuples(bendStart), end: toTuples(bendEnd) };
-  }, [edge, flange, thickness]);
-
-  const flangeFaceId = `flange_face_${flange.id}`;
-
-  return (
-    <group>
-      <mesh
-        geometry={geometry}
-        userData={{ faceId: flangeFaceId }}
-        raycast={(isActiveSketch || isFoldMode) ? noopRaycast as any : undefined}
-        onClick={(e) => {
-          if (isSketchMode && onFaceClick) {
-            e.stopPropagation();
-            onFaceClick(flangeFaceId);
-          }
-        }}
-        onPointerOver={(e) => {
-          if (isSketchMode) {
-            e.stopPropagation();
-            document.body.style.cursor = 'pointer';
-            setHovered(true);
-          }
-        }}
-        onPointerOut={() => {
-          if (isSketchMode) {
-            document.body.style.cursor = 'default';
-            setHovered(false);
-          }
-        }}
-      >
-        <meshStandardMaterial
-          color={isSketchMode && hovered ? '#93c5fd' : '#bcc2c8'}
-          metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
-        />
-      </mesh>
-      {showLines && edgesGeo && (
-        <lineSegments geometry={edgesGeo}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
-        </lineSegments>
-      )}
-      {showLines && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
-      {showLines && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
-    </group>
-  );
-}
-
-function FoldMesh({
-  profile, fold, otherFolds, thickness, isSketchMode, isFoldMode, onFaceClick, showLines = true, activeSketchFaceId,
-  childFolds, movingCutouts,
-}: {
-  profile: Point2D[];
-  fold: Fold;
-  otherFolds: Fold[];
-  thickness: number;
-  isSketchMode?: boolean;
-  isFoldMode?: boolean;
-  onFaceClick?: (faceId: string) => void;
-  showLines?: boolean;
-  activeSketchFaceId?: string | null;
-  childFolds?: Fold[];
-  movingCutouts?: Point2D[][];
-}) {
-  const isActiveSketch = activeSketchFaceId === `fold_face_${fold.id}`;
-  const [hovered, setHovered] = useState(false);
-  const result = useMemo(
-    () => createFoldMesh(profile, fold, otherFolds, thickness, childFolds, movingCutouts),
-    [profile, fold, otherFolds, thickness, childFolds, movingCutouts],
-  );
-
-  const tipEdgesGeo = useMemo(() => {
-    if (!result?.tipBoundaryEdges) return null;
-    return result.tipBoundaryEdges;
-  }, [result]);
-
-  const arcEdgesGeo = useMemo(() => {
-    if (!result?.arcBoundaryEdges) return null;
-    return result.arcBoundaryEdges;
-  }, [result]);
-
-  const bendLines = useMemo(() => {
-    const { bendStart, bendEnd } = computeFoldBendLines(profile, fold, thickness);
-    const toTuples = (pts: THREE.Vector3[]) =>
-      pts.map(p => [p.x, p.y, p.z] as [number, number, number]);
-    return { start: toTuples(bendStart), end: toTuples(bendEnd) };
-  }, [profile, fold, thickness]);
-
-  const foldFaceId = `fold_face_${fold.id}`;
-
-  if (!result) return null;
-
-  const handleClick = (e: any) => {
-    if (isSketchMode && onFaceClick) {
-      e.stopPropagation();
-      onFaceClick(foldFaceId);
-    }
-  };
-
-  const handlePointerOver = (e: any) => {
-    if (isSketchMode) {
-      e.stopPropagation();
-      document.body.style.cursor = 'pointer';
-      setHovered(true);
-    }
-  };
-
-  const handlePointerOut = () => {
-    if (isSketchMode) {
-      document.body.style.cursor = 'default';
-      setHovered(false);
-    }
-  };
-
-  const matColor = isSketchMode && hovered ? '#93c5fd' : '#bcc2c8';
-
-  return (
-    <group>
-      {/* Arc (bend zone) */}
-      <mesh
-        geometry={result.arc}
-        userData={{ faceId: foldFaceId }}
-        raycast={(isActiveSketch || isFoldMode) ? noopRaycast as any : undefined}
-        onClick={handleClick}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
-      >
-        <meshStandardMaterial color={matColor} metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
-      </mesh>
-      {/* Tip (flat faces) */}
-      <mesh
-        geometry={result.tip}
-        userData={{ faceId: foldFaceId }}
-        raycast={(isActiveSketch || isFoldMode) ? noopRaycast as any : undefined}
-        onClick={handleClick}
-        onPointerOver={handlePointerOver}
-        onPointerOut={handlePointerOut}
-      >
-        <meshStandardMaterial color={matColor} metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
-      </mesh>
-      {showLines && tipEdgesGeo && (
-        <lineSegments geometry={tipEdgesGeo}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
-        </lineSegments>
-      )}
-      {showLines && arcEdgesGeo && (
-        <lineSegments geometry={arcEdgesGeo}>
-          <lineBasicMaterial color="#475569" linewidth={1} />
-        </lineSegments>
-      )}
-      {showLines && bendLines.start.length > 0 && <Line points={bendLines.start} color="#475569" lineWidth={1.5} />}
-      {showLines && bendLines.end.length > 0 && <Line points={bendLines.end} color="#475569" lineWidth={1.5} />}
-    </group>
-  );
-}
+// ========== Sketch Entity 3D Renderers ==========
 
 function SketchLine3D({
   line, profile, thickness, isSelected, hasFold, isFoldMode, isFoldQualified, onSketchLineClick,
 }: {
-  line: FaceSketchLine;
-  profile: Point2D[];
-  thickness: number;
-  isSelected: boolean;
-  hasFold: boolean;
-  isFoldMode: boolean;
-  isFoldQualified: boolean;
+  line: FaceSketchLine; profile: Point2D[]; thickness: number;
+  isSelected: boolean; hasFold: boolean; isFoldMode: boolean; isFoldQualified: boolean;
   onSketchLineClick?: (id: string) => void;
 }) {
   const positions = useMemo(() => {
@@ -267,9 +75,7 @@ function SketchLine3D({
         points={[positions.start, positions.end]}
         color={color}
         lineWidth={isSelected ? 3 : 2}
-        dashed
-        dashSize={2}
-        gapSize={1}
+        dashed dashSize={2} gapSize={1}
       />
       {isFoldMode && !hasFold && (
         <mesh
@@ -327,62 +133,19 @@ function SketchRect3D({ entity, profile, thickness }: {
   return <Line points={points} color="#ef4444" lineWidth={2} />;
 }
 
+// ========== Main Sheet Metal Mesh (API-driven) ==========
+
 function SheetMetalMesh({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds, interactionMode, onFaceClick,
   faceSketches, selectedSketchLineId, onSketchLineClick,
-  activeSketchFaceId, cutouts, useCADKernel,
+  activeSketchFaceId, modelResult, modelLoading,
 }: SheetMetalMeshProps) {
-  const fixedProfile = useMemo(() => getFixedProfile(profile, folds, thickness), [profile, folds, thickness]);
-  const fixedCutoutPolygons = useMemo(
-    () => cutouts && cutouts.length > 0 ? getFixedCutouts(cutouts, folds, profile, thickness) : undefined,
-    [cutouts, folds, profile, thickness],
-  );
-
-  // ── CAD Kernel path: build base face via B-Rep (topologically correct) ──
-  const cadResult = useMemo(() => {
-    if (!useCADKernel) return null;
-    try {
-      const allCutoutPolys = cutouts && cutouts.length > 0
-        ? cutouts.map(c => c.polygon)
-        : undefined;
-      return buildBaseFace(fixedProfile, thickness, allCutoutPolys);
-    } catch (err) {
-      console.error("[CAD] buildBaseFace failed, falling back:", err);
-      return null;
-    }
-  }, [useCADKernel, fixedProfile, thickness, cutouts]);
-
-  // ── Fallback path: manual mesh construction ──
-  const foldLineInfos = useMemo(() => {
-    if (cadResult) return []; // Skip when CAD kernel is active
-    const bFolds = folds.filter(f => isBaseFaceFold(f));
-    if (bFolds.length === 0) return [];
-    const infos: ReturnType<typeof computeFoldLineInfo>[] = [];
-    const allCutoutPolys = cutouts && cutouts.length > 0
-      ? cutouts.map(c => c.polygon)
-      : undefined;
-    for (const fold of bFolds) {
-      const info = computeFoldLineInfo(fold, profile, thickness, allCutoutPolys);
-      if (info) infos.push(info);
-    }
-    return infos;
-  }, [cadResult, cutouts, folds, profile, thickness]);
-
-  const geometry = useMemo(() => {
-    if (cadResult) return cadResult.mesh;
-    const validInfos = foldLineInfos.filter(Boolean) as NonNullable<typeof foldLineInfos[0]>[];
-    return createBaseFaceMesh(fixedProfile, thickness, fixedCutoutPolygons, validInfos.length > 0 ? validInfos : undefined);
-  }, [cadResult, fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
-
-  const edges = useMemo(
-    () => getAllSelectableEdges(profile, thickness, flanges, folds),
-    [profile, thickness, flanges, folds],
-  );
-  const edgesGeometry = useMemo(() => {
-    if (cadResult) return cadResult.edges;
-    return computeBoundaryEdges(fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos.length > 0 ? foldLineInfos : undefined);
-  }, [cadResult, fixedProfile, thickness, fixedCutoutPolygons, foldLineInfos]);
+  // Get edges from API result
+  const edges = useMemo(() => {
+    if (!modelResult) return [];
+    return modelResult.edges.map(apiEdgeToPartEdge);
+  }, [modelResult]);
 
   const edgeMap = useMemo(() => {
     const map = new Map<string, PartEdge>();
@@ -391,48 +154,22 @@ function SheetMetalMesh({
   }, [edges]);
 
   const flangedEdgeIds = useMemo(() => new Set(flanges.map(f => f.edgeId)), [flanges]);
-
   const baseFolds = useMemo(() => folds.filter(f => isBaseFaceFold(f)), [folds]);
-  const nonBaseFolds = useMemo(() => folds.filter(f => !isBaseFaceFold(f)), [folds]);
 
   const nonSelectableEdgeIds = useMemo(() => {
     const ids = new Set<string>();
-    // Mark explicit fold edges (base folds only)
     baseFolds.forEach(fold => ids.add(`fold_edge_${fold.id}`));
-    // Mark fixed profile edges that geometrically correspond to fold lines
     for (const edge of edges) {
-      if (isEdgeOnFoldLine(edge, baseFolds, profile)) {
-        ids.add(edge.id);
-      }
-    }
-    // Mark fold side and tip edges (not useful for flanges on base face)
-    for (const edge of edges) {
+      if (isEdgeOnFoldLine(edge, baseFolds, profile)) ids.add(edge.id);
       if (edge.id.includes('_side_s_fold_') || edge.id.includes('_side_e_fold_') ||
           edge.id.includes('_tip_outer_fold_') || edge.id.includes('_tip_inner_fold_')) {
         ids.add(edge.id);
       }
     }
-    // Mark edges that are collinear with any base fold's inner edge
-    for (const fold of baseFolds) {
-      const foldEdge = computeFoldEdge(profile, thickness, fold);
-      const foldDir = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
-      for (const edge of edges) {
-        if (ids.has(edge.id)) continue;
-        const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
-        const cross = Math.abs(foldDir.x * edgeDir.y - foldDir.y * edgeDir.x);
-        if (cross > 0.05) continue;
-        const mid = edge.start.clone().add(edge.end).multiplyScalar(0.5);
-        const toMid = new THREE.Vector3().subVectors(mid, foldEdge.start);
-        const perpDist = Math.abs(toMid.x * (-foldDir.y) + toMid.y * foldDir.x);
-        if (perpDist < 1.5) {
-          ids.add(edge.id);
-        }
-      }
-    }
     return ids;
-  }, [baseFolds, edges, profile, thickness]);
+  }, [baseFolds, edges, profile]);
 
-  // Only render base face entities in 3D (fold face entities need separate transform)
+  // Base face entities for sketch visualization
   const allEntities = useMemo(() => {
     const sketches = faceSketches.filter(fs => {
       if (fs.faceId !== 'base_top' && fs.faceId !== 'base_bot') return false;
@@ -464,16 +201,17 @@ function SheetMetalMesh({
   const isEdgeMode = interactionMode === 'edge';
   const isViewMode = interactionMode === 'view';
 
+  if (!modelResult) return null;
+
   return (
     <group>
-      {/* Solid base face */}
+      {/* Solid base face from API */}
       <mesh
-        geometry={geometry}
+        geometry={modelResult.baseFace}
         userData={{ faceType: 'base' }}
         raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot' || isFoldMode) ? noopRaycast as any : undefined}
         onClick={(e) => {
           if (isSketchMode && onFaceClick) {
-            // Skip if a fold/flange face was hit closer
             const closest = e.intersections[0];
             if (closest && closest.object.userData?.faceId) return;
             e.stopPropagation();
@@ -482,7 +220,6 @@ function SheetMetalMesh({
         }}
         onPointerOver={(e) => {
           if (isSketchMode) {
-            // Don't highlight if a fold/flange face is closer
             const closest = e.intersections[0];
             if (closest && closest.object.userData?.faceId) return;
             document.body.style.cursor = 'pointer';
@@ -502,15 +239,61 @@ function SheetMetalMesh({
         />
       </mesh>
 
-      {/* Fold-edge sidewalls are now built directly inside createBaseFaceMesh */}
-
+      {/* Boundary edges from API */}
       {!isViewMode && !isEdgeMode && (
-        <lineSegments geometry={edgesGeometry}>
+        <lineSegments geometry={modelResult.boundaryEdges}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
       )}
 
-      {/* Selectable edges (visible in edge mode, fold-line edges always visible) */}
+      {/* Fold meshes from API */}
+      {modelResult.folds.map(fold => {
+        const foldFaceId = `fold_face_${fold.id}`;
+        return (
+          <group key={fold.id}>
+            <mesh
+              geometry={fold.arc}
+              userData={{ faceId: foldFaceId }}
+              raycast={(activeSketchFaceId === foldFaceId || isFoldMode) ? noopRaycast as any : undefined}
+              onClick={(e) => {
+                if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
+              }}
+            >
+              <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+            </mesh>
+            <mesh
+              geometry={fold.tip}
+              userData={{ faceId: foldFaceId }}
+              raycast={(activeSketchFaceId === foldFaceId || isFoldMode) ? noopRaycast as any : undefined}
+              onClick={(e) => {
+                if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
+              }}
+            >
+              <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+            </mesh>
+          </group>
+        );
+      })}
+
+      {/* Flange meshes from API */}
+      {modelResult.flanges.map(flange => {
+        const flangeFaceId = `flange_face_${flange.id}`;
+        return (
+          <mesh
+            key={flange.id}
+            geometry={flange.mesh}
+            userData={{ faceId: flangeFaceId }}
+            raycast={(activeSketchFaceId === flangeFaceId || isFoldMode) ? noopRaycast as any : undefined}
+            onClick={(e) => {
+              if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
+            }}
+          >
+            <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+          </mesh>
+        );
+      })}
+
+      {/* Selectable edges */}
       {edges.map((edge) => {
         const isSelected = selectedEdgeId === edge.id;
         const hasFlangeOnIt = flangedEdgeIds.has(edge.id);
@@ -523,50 +306,30 @@ function SheetMetalMesh({
         const edgeLen = edge.start.distanceTo(edge.end);
         const edgeDir = new THREE.Vector3().subVectors(edge.end, edge.start).normalize();
         const edgeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), edgeDir);
-
         const isInnerTip = edge.id.includes('_tip_inner_');
-        const edgeColor = isFoldLine
-          ? '#ef4444'
-          : hasFlangeOnIt ? '#22c55e'
-          : isSelected ? '#a855f7'
-          : isInnerTip ? '#f59e0b'
-          : '#3b82f6';
-
-        // Only show colored edge highlights in edge mode, hide fold-line edges (not actionable)
+        const edgeColor = isFoldLine ? '#ef4444' : hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : isInnerTip ? '#f59e0b' : '#3b82f6';
         const showEdgeLine = isEdgeMode && !isFoldLine;
 
         return (
           <group key={edge.id}>
             {showEdgeLine && (
               <Line
-                points={[
-                  [edge.start.x, edge.start.y, edge.start.z],
-                  [edge.end.x, edge.end.y, edge.end.z],
-                ]}
+                points={[[edge.start.x, edge.start.y, edge.start.z], [edge.end.x, edge.end.y, edge.end.z]]}
                 color={edgeColor}
-                lineWidth={isSelected ? 3 : isFoldLine ? 2.5 : 2}
+                lineWidth={isSelected ? 3 : 2}
               />
             )}
-
             {isEdgeMode && !isFoldLine && (
               <mesh
-                position={edgeMid}
-                quaternion={edgeQuat}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onEdgeClick(edge.id);
-                }}
-                onPointerOver={(e) => {
-                  e.stopPropagation();
-                  document.body.style.cursor = 'pointer';
-                }}
+                position={edgeMid} quaternion={edgeQuat}
+                onClick={(e) => { e.stopPropagation(); onEdgeClick(edge.id); }}
+                onPointerOver={(e) => { e.stopPropagation(); document.body.style.cursor = 'pointer'; }}
                 onPointerOut={() => { document.body.style.cursor = 'default'; }}
               >
                 <boxGeometry args={[edgeLen, 3, 3]} />
                 <meshBasicMaterial transparent opacity={0} />
               </mesh>
             )}
-
             {isSelected && (
               <arrowHelper args={[edge.normal, edgeMid, 10, 0xa855f7, 3, 2]} />
             )}
@@ -574,67 +337,45 @@ function SheetMetalMesh({
         );
       })}
 
-      {/* Render sketch lines on 3D faces (hide lines that already have folds) */}
+      {/* Sketch entities on base face */}
       {(isFoldMode || isSketchMode) && allLines.filter(line => !foldedLineIds.has(line.id)).map(line => {
         const classification = classifySketchLineAsFold(line, faceBounds.width, faceBounds.height);
         return (
           <SketchLine3D
-            key={line.id}
-            line={line}
-            profile={profile}
-            thickness={thickness}
-            isSelected={selectedSketchLineId === line.id}
-            hasFold={false}
-            isFoldMode={isFoldMode}
-            isFoldQualified={!!classification}
+            key={line.id} line={line} profile={profile} thickness={thickness}
+            isSelected={selectedSketchLineId === line.id} hasFold={false}
+            isFoldMode={isFoldMode} isFoldQualified={!!classification}
             onSketchLineClick={onSketchLineClick}
           />
         );
       })}
-
-      {/* Render sketch circles on 3D faces */}
       {(isFoldMode || isSketchMode) && allCircles.map(entity => (
         <SketchCircle3D key={entity.id} entity={entity} profile={profile} thickness={thickness} />
       ))}
-
-      {/* Render sketch rects on 3D faces */}
       {(isFoldMode || isSketchMode) && allRects.map(entity => (
         <SketchRect3D key={entity.id} entity={entity} profile={profile} thickness={thickness} />
       ))}
 
-      {/* Render saved sketch entities on fold faces */}
+      {/* Sketch entities on fold/flange faces — use face registry transforms */}
       {(isFoldMode || isSketchMode) && faceSketches
-        .filter(fs => fs.faceId.startsWith('fold_face_') && fs.faceId !== activeSketchFaceId)
+        .filter(fs => (fs.faceId.startsWith('fold_face_') || fs.faceId.startsWith('flange_face_')) && fs.faceId !== activeSketchFaceId)
         .map(fs => {
-          const foldId = fs.faceId.replace('fold_face_', '');
-          const fold = folds.find(f => f.id === foldId);
-          if (!fold) return null;
-
-          const foldEdge = computeFoldEdge(profile, thickness, fold);
-          const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
-          const normal = foldEdge.normal.clone();
-          const dSign = fold.direction === 'up' ? 1 : -1;
-          const angleRad = fold.angle * Math.PI / 180;
-          const q = new THREE.Quaternion().setFromAxisAngle(tangent, dSign * angleRad);
-          const bentNormal = normal.clone().applyQuaternion(q);
-          const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
-
-          const m = new THREE.Matrix4();
-          m.makeBasis(tangent, bentNormal, bentUp);
-          m.setPosition(foldEdge.start.clone().add(bentUp.clone().multiplyScalar(thickness)));
+          const ft = getFaceTransform(fs.faceId);
+          if (!ft) return null;
+          const m = faceTransformToMatrix4(ft);
 
           return (
             <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
               {fs.entities.map(ent => {
                 if (ent.type === 'line') {
+                  const hasFoldOnIt = folds.some(f => f.sketchLineId === ent.id);
+                  const color = hasFoldOnIt ? '#22c55e' : '#ef4444';
                   const s = new THREE.Vector3(ent.start.x, ent.start.y, 0.02);
                   const e = new THREE.Vector3(ent.end.x, ent.end.y, 0.02);
                   const mid = s.clone().add(e).multiplyScalar(0.5);
                   const dir = new THREE.Vector3().subVectors(e, s).normalize();
                   const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
                   const len = s.distanceTo(e);
-                  const hasFoldOnIt = folds.some(f => f.sketchLineId === ent.id);
-                  const color = hasFoldOnIt ? '#22c55e' : '#ef4444';
                   return (
                     <group key={ent.id}>
                       <Line points={[[ent.start.x, ent.start.y, 0.02], [ent.end.x, ent.end.y, 0.02]]}
@@ -675,215 +416,11 @@ function SheetMetalMesh({
             </group>
           );
         })}
-
-      {/* Render saved sketch entities on flange faces */}
-      {(isFoldMode || isSketchMode) && faceSketches
-        .filter(fs => fs.faceId.startsWith('flange_face_') && fs.faceId !== activeSketchFaceId)
-        .map(fs => {
-          const flangeId = fs.faceId.replace('flange_face_', '');
-          const flange = flanges.find(f => f.id === flangeId);
-          if (!flange) return null;
-
-          const parentEdge = edges.find(e => e.id === flange.edgeId);
-          if (!parentEdge) return null;
-
-          const bendAngleRad = (flange.angle * Math.PI) / 180;
-          const dirSign = flange.direction === 'up' ? 1 : -1;
-          const R = flange.bendRadius;
-          const uDir = parentEdge.normal.clone().normalize();
-          const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
-          const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-
-          const sinA = Math.sin(bendAngleRad);
-          const cosA = Math.cos(bendAngleRad);
-          const arcEndU = R * sinA;
-          const arcEndW = R * (1 - cosA);
-
-          const flangeExtDir = uDir.clone().multiplyScalar(cosA).add(wDir.clone().multiplyScalar(sinA)).normalize();
-          const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
-
-          const flangeOrigin = parentEdge.start.clone()
-            .add(uDir.clone().multiplyScalar(arcEndU))
-            .add(wDir.clone().multiplyScalar(arcEndW))
-            .add(flangeSurfaceNormal.clone().multiplyScalar(thickness));
-
-          const m = new THREE.Matrix4();
-          m.makeBasis(edgeDir, flangeExtDir, flangeSurfaceNormal);
-          m.setPosition(flangeOrigin);
-
-          return (
-            <group key={fs.faceId} matrixAutoUpdate={false} matrix={m}>
-              {fs.entities.map(ent => {
-                if (ent.type === 'line') {
-                  const s = new THREE.Vector3(ent.start.x, ent.start.y, 0.02);
-                  const e = new THREE.Vector3(ent.end.x, ent.end.y, 0.02);
-                  const mid = s.clone().add(e).multiplyScalar(0.5);
-                  const dir = new THREE.Vector3().subVectors(e, s).normalize();
-                  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
-                  const len = s.distanceTo(e);
-                  const hasFoldOnIt = folds.some(f => f.sketchLineId === ent.id);
-                  const color = hasFoldOnIt ? '#22c55e' : '#ef4444';
-                  return (
-                    <group key={ent.id}>
-                      <Line points={[[ent.start.x, ent.start.y, 0.02], [ent.end.x, ent.end.y, 0.02]]}
-                        color={color} lineWidth={2} dashed dashSize={2} gapSize={1} />
-                      {isFoldMode && !hasFoldOnIt && (
-                        <mesh position={mid} quaternion={quat}
-                          onClick={(ev) => { ev.stopPropagation(); onSketchLineClick?.(ent.id); }}
-                          onPointerOver={() => { document.body.style.cursor = 'pointer'; }}
-                          onPointerOut={() => { document.body.style.cursor = 'default'; }}>
-                          <boxGeometry args={[len, 4, 4]} />
-                          <meshBasicMaterial transparent opacity={0} />
-                        </mesh>
-                      )}
-                    </group>
-                  );
-                }
-                if (ent.type === 'circle') {
-                  const pts: [number,number,number][] = [];
-                  for (let i = 0; i <= 64; i++) {
-                    const a = (i / 64) * Math.PI * 2;
-                    pts.push([ent.center.x + Math.cos(a) * ent.radius, ent.center.y + Math.sin(a) * ent.radius, 0.02]);
-                  }
-                  return <Line key={ent.id} points={pts} color="#ef4444" lineWidth={2} />;
-                }
-                if (ent.type === 'rect') {
-                  return (
-                    <Line key={ent.id} points={[
-                      [ent.origin.x, ent.origin.y, 0.02],
-                      [ent.origin.x + ent.width, ent.origin.y, 0.02],
-                      [ent.origin.x + ent.width, ent.origin.y + ent.height, 0.02],
-                      [ent.origin.x, ent.origin.y + ent.height, 0.02],
-                      [ent.origin.x, ent.origin.y, 0.02],
-                    ]} color="#ef4444" lineWidth={2} />
-                  );
-                }
-                return null;
-              })}
-            </group>
-          );
-        })}
-
-      {/* Render flanges */}
-      {flanges.map((flange) => {
-        const edge = edgeMap.get(flange.edgeId);
-        if (!edge) return null;
-        const flangeChildFolds = nonBaseFolds.filter(f => f.faceId === `flange_face_${flange.id}`);
-        return (
-          <FlangeMesh
-            key={flange.id}
-            edge={edge}
-            flange={flange}
-            thickness={thickness}
-            isSketchMode={isSketchMode}
-            isFoldMode={isFoldMode}
-            onFaceClick={onFaceClick}
-            showLines={!isViewMode && !isEdgeMode}
-            activeSketchFaceId={activeSketchFaceId}
-            childFolds={flangeChildFolds.length > 0 ? flangeChildFolds : undefined}
-          />
-        );
-      })}
-
-      {/* Render base-face folds — child folds get parent's bend transform applied */}
-      {baseFolds.map((fold, i) => {
-        const parentId = getFoldParentId(fold, folds, profile);
-        const parentFold = parentId ? folds.find(f => f.id === parentId) : null;
-        const foldChildFolds = nonBaseFolds.filter(f => f.faceId === `fold_face_${fold.id}`);
-        // Pass ALL cutout polygons so createFoldMesh can generate arc-hole-walls
-        // for cutouts that straddle the fold line (not just moving-side pieces)
-        const foldAllCutouts = cutouts && cutouts.length > 0
-          ? cutouts.map(c => c.polygon)
-          : undefined;
-
-        const mesh = (
-          <FoldMesh
-            profile={profile}
-            fold={fold}
-            otherFolds={baseFolds.filter((_, j) => j !== i)}
-            thickness={thickness}
-            isSketchMode={isSketchMode}
-            isFoldMode={isFoldMode}
-            onFaceClick={onFaceClick}
-            showLines={!isViewMode && !isEdgeMode}
-            activeSketchFaceId={activeSketchFaceId}
-            childFolds={foldChildFolds.length > 0 ? foldChildFolds : undefined}
-            movingCutouts={foldAllCutouts && foldAllCutouts.length > 0 ? foldAllCutouts : undefined}
-          />
-        );
-
-        if (parentFold) {
-          const parentEdge = computeFoldEdge(profile, thickness, parentFold);
-          const axis = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-          const R = parentFold.bendRadius;
-
-          const pivot = parentEdge.start.clone().add(
-            parentEdge.faceNormal.clone().multiplyScalar(R)
-          );
-
-          const crossUW = new THREE.Vector3().crossVectors(parentEdge.normal, parentEdge.faceNormal);
-          const signFactor = Math.sign(crossUW.dot(axis));
-          const angleRad = signFactor * (parentFold.angle * Math.PI / 180);
-          const quat = new THREE.Quaternion().setFromAxisAngle(axis, angleRad);
-
-          return (
-            <group key={fold.id} position={[pivot.x, pivot.y, pivot.z]} quaternion={quat}>
-              <group position={[-pivot.x, -pivot.y, -pivot.z]}>
-                {mesh}
-              </group>
-            </group>
-          );
-        }
-
-        return <group key={fold.id}>{mesh}</group>;
-      })}
-
-      {/* Render non-base-face folds with virtual profile + transform */}
-      {nonBaseFolds.map((fold) => {
-        const faceId = fold.faceId!;
-        const faceDims = getFaceDimensions(faceId, profile, thickness, flanges, folds);
-        if (!faceDims) return null;
-
-        const virtualProfile = makeVirtualProfile(faceDims.width, faceDims.height);
-
-        // Compute transform from virtual XY space to world coordinates
-        let transform: THREE.Matrix4 | null = null;
-        if (faceId.startsWith('flange_face_')) {
-          const flangeId = faceId.replace('flange_face_', '');
-          const flange = flanges.find(f => f.id === flangeId);
-          if (!flange) return null;
-          const parentEdge = edges.find(e => e.id === flange.edgeId);
-          if (!parentEdge) return null;
-          transform = computeFlangeFaceTransform(parentEdge, flange, thickness);
-        } else if (faceId.startsWith('fold_face_')) {
-          const parentFoldId = faceId.replace('fold_face_', '');
-          const parentFold = folds.find(f => f.id === parentFoldId);
-          if (!parentFold) return null;
-          transform = computeFoldFaceTransform(profile, parentFold, thickness);
-        }
-        if (!transform) return null;
-
-        // Same-face folds for clipping
-        const sameFaceFolds = nonBaseFolds.filter(f => f.faceId === faceId && f.id !== fold.id);
-
-        return (
-          <group key={fold.id} matrixAutoUpdate={false} matrix={transform}>
-            <FoldMesh
-              profile={virtualProfile}
-              fold={fold}
-              otherFolds={sameFaceFolds}
-              thickness={thickness}
-              isSketchMode={isSketchMode}
-              onFaceClick={onFaceClick}
-              showLines={!isViewMode && !isEdgeMode}
-              activeSketchFaceId={activeSketchFaceId}
-            />
-          </group>
-        );
-      })}
     </group>
   );
 }
+
+// ========== Camera & Scene Components ==========
 
 function CameraApi({ apiRef, defaultPos, defaultTarget }: {
   apiRef: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>;
@@ -894,38 +431,22 @@ function CameraApi({ apiRef, defaultPos, defaultTarget }: {
   const controls = useThree(s => s.controls);
   apiRef.current.reset = () => {
     camera.position.set(...defaultPos);
-    if (controls) {
-      (controls as any).target.set(...defaultTarget);
-      (controls as any).update();
-    }
+    if (controls) { (controls as any).target.set(...defaultTarget); (controls as any).update(); }
   };
   apiRef.current.setFrontalView = () => {
     const [tx, ty, tz] = defaultTarget;
     const dist = Math.max(defaultPos[2] * 1.5, 200);
     camera.position.set(tx, ty, dist);
-    if (controls) {
-      (controls as any).target.set(tx, ty, tz);
-      (controls as any).update();
-    }
+    if (controls) { (controls as any).target.set(tx, ty, tz); (controls as any).update(); }
   };
   apiRef.current.setViewToFace = (normal: [number,number,number], center: [number,number,number]) => {
     const dist = Math.max(defaultPos[2] * 1.5, 200);
-    camera.position.set(
-      center[0] + normal[0] * dist,
-      center[1] + normal[1] * dist,
-      center[2] + normal[2] * dist,
-    );
-    // Set up vector: pick one that's not parallel to the normal
+    camera.position.set(center[0] + normal[0] * dist, center[1] + normal[1] * dist, center[2] + normal[2] * dist);
     const n = new THREE.Vector3(...normal);
     let upCandidate = new THREE.Vector3(0, 0, 1);
-    if (Math.abs(n.dot(upCandidate)) > 0.9) {
-      upCandidate = new THREE.Vector3(0, 1, 0);
-    }
+    if (Math.abs(n.dot(upCandidate)) > 0.9) upCandidate = new THREE.Vector3(0, 1, 0);
     camera.up.copy(upCandidate);
-    if (controls) {
-      (controls as any).target.set(...center);
-      (controls as any).update();
-    }
+    if (controls) { (controls as any).target.set(...center); (controls as any).update(); }
   };
   return null;
 }
@@ -934,12 +455,11 @@ function InventorBackground() {
   const { scene } = useThree();
   useMemo(() => {
     const canvas = document.createElement('canvas');
-    canvas.width = 2;
-    canvas.height = 256;
+    canvas.width = 2; canvas.height = 256;
     const ctx = canvas.getContext('2d')!;
     const gradient = ctx.createLinearGradient(0, 0, 0, 256);
-    gradient.addColorStop(0, '#c8d6e5');   // top: soft blue
-    gradient.addColorStop(1, '#edf1f5');   // bottom: near-white
+    gradient.addColorStop(0, '#c8d6e5');
+    gradient.addColorStop(1, '#edf1f5');
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, 2, 256);
     const tex = new THREE.CanvasTexture(canvas);
@@ -961,6 +481,8 @@ function SceneSetup() {
   );
 }
 
+// ========== Main Viewer3D Component ==========
+
 interface Viewer3DProps {
   profile: Point2D[];
   thickness: number;
@@ -975,7 +497,7 @@ interface Viewer3DProps {
   onSketchLineClick?: (lineId: string) => void;
   children?: React.ReactNode;
   cutouts?: ProfileCutout[];
-  useCADKernel?: boolean;
+  kFactor: number;
   // Sketch plane props
   sketchPlaneActive?: boolean;
   sketchFaceId?: string | null;
@@ -992,7 +514,6 @@ interface Viewer3DProps {
   sketchSelectedIds?: string[];
   onSketchSelectEntity?: (id: string, multi?: boolean) => void;
   onSketchDeselectAll?: () => void;
-  // Camera control
   cameraApiRef?: React.MutableRefObject<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void } | null>;
 }
 
@@ -1000,7 +521,7 @@ export function Viewer3D({
   profile, thickness, selectedEdgeId, onEdgeClick,
   flanges, folds = [], interactionMode = 'view', onFaceClick,
   faceSketches = [], selectedSketchLineId = null, onSketchLineClick,
-  children, cutouts, useCADKernel,
+  children, cutouts, kFactor,
   sketchPlaneActive, sketchFaceId, sketchFaceOrigin,
   sketchFaceWidth, sketchFaceHeight,
   sketchEntities, sketchActiveTool, sketchGridSize, sketchSnapEnabled,
@@ -1008,54 +529,34 @@ export function Viewer3D({
   cameraApiRef,
 }: Viewer3DProps) {
   const cameraApi = useRef<{ reset: () => void; setFrontalView: () => void; setViewToFace: (normal: [number,number,number], center: [number,number,number]) => void }>({ reset: () => {}, setFrontalView: () => {}, setViewToFace: () => {} });
-  const [debugInfo, setDebugInfo] = useState<string | null>(null);
 
-  const runGeometryDebug = () => {
-    const lines: string[] = [];
-    lines.push('=== GEOMETRY DEBUG ===');
-    lines.push(`Profile vertices: ${profile.length}`);
-    lines.push(`Thickness: ${thickness}`);
-    lines.push(`Flanges: ${flanges.length}`);
-    lines.push(`Folds: ${(folds || []).length}`);
-    lines.push('');
+  // ── Async model loading from API ──
+  const [modelResult, setModelResult] = useState<BuildModelResult | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-    const fixedProf = getFixedProfile(profile, folds || [], thickness);
-    const baseGeo = createBaseFaceMesh(fixedProf, thickness);
-    const baseBoundary = computeBoundaryEdges(fixedProf, thickness);
-    lines.push('--- BASE FACE ---');
-    lines.push(`  mesh positions: ${baseGeo.attributes.position.count}`);
-    lines.push(`  boundary edge segments: ${baseBoundary.attributes.position.count / 2}`);
-    lines.push('');
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds || []);
-    const edgeMap = new Map<string, PartEdge>();
-    allEdges.forEach(e => edgeMap.set(e.id, e));
+    debounceRef.current = setTimeout(async () => {
+      setModelLoading(true);
+      setModelError(null);
+      try {
+        const result = await buildModel(
+          profile, thickness, cutouts ?? [], folds, flanges, faceSketches, kFactor,
+        );
+        setModelResult(result);
+      } catch (err: any) {
+        console.error('[API] buildModel failed:', err);
+        setModelError(err.message ?? 'Unknown error');
+      } finally {
+        setModelLoading(false);
+      }
+    }, 300);
 
-    flanges.forEach(flange => {
-      const edge = edgeMap.get(flange.edgeId);
-      if (!edge) { lines.push(`--- FLANGE ${flange.id}: edge not found ---`); return; }
-      const result = createFlangeMesh(edge, flange, thickness);
-      lines.push(`--- FLANGE ${flange.id} ---`);
-      lines.push(`  mesh positions: ${result.mesh.attributes.position.count}`);
-      lines.push(`  boundary edge segments: ${result.boundaryEdges.attributes.position.count / 2}`);
-    });
-    lines.push('');
-
-    const baseFoldsArr = (folds || []).filter(f => isBaseFaceFold(f));
-    baseFoldsArr.forEach((fold, i) => {
-      const result = createFoldMesh(profile, fold, baseFoldsArr.filter((_, j) => j !== i), thickness);
-      lines.push(`--- FOLD ${fold.id} ---`);
-      if (!result) { lines.push('  result: null'); return; }
-      lines.push(`  arc positions: ${result.arc.attributes.position.count}`);
-      lines.push(`  tip positions: ${result.tip.attributes.position.count}`);
-      lines.push(`  tip boundary edge segments: ${result.tipBoundaryEdges.attributes.position.count / 2}`);
-      lines.push(`  arc boundary edge segments: ${result.arcBoundaryEdges.attributes.position.count / 2}`);
-    });
-
-    const output = lines.join('\n');
-    console.log(output);
-    setDebugInfo(output);
-  };
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [profile, thickness, cutouts, folds, flanges, faceSketches, kFactor]);
 
   const bounds = useMemo(() => {
     const xs = profile.map(p => p.x);
@@ -1075,15 +576,30 @@ export function Viewer3D({
   ];
   const defaultTarget: [number, number, number] = [bounds.cx, bounds.cy, thickness / 2];
 
-  // Sync internal camera API to external ref
   useEffect(() => {
-    if (cameraApiRef) {
-      cameraApiRef.current = cameraApi.current;
-    }
+    if (cameraApiRef) cameraApiRef.current = cameraApi.current;
   });
 
   return (
     <div className="w-full h-full bg-cad-surface relative">
+      {/* Loading overlay */}
+      {modelLoading && (
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/30 pointer-events-none">
+          <div className="flex items-center gap-2 bg-card/90 border rounded-lg px-4 py-2 shadow-sm">
+            <Loader2 className="h-4 w-4 animate-spin text-primary" />
+            <span className="text-xs text-muted-foreground">Building model...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {modelError && !modelLoading && (
+        <div className="absolute top-3 left-3 z-10 bg-destructive/10 border border-destructive/30 rounded-lg px-3 py-2 max-w-sm">
+          <p className="text-xs text-destructive font-medium">API Error</p>
+          <p className="text-xs text-destructive/80 mt-0.5">{modelError}</p>
+        </div>
+      )}
+
       <Canvas>
         <PerspectiveCamera makeDefault position={defaultPos} fov={45} near={0.1} far={10000} />
         <SceneSetup />
@@ -1103,98 +619,20 @@ export function Viewer3D({
           onSketchLineClick={onSketchLineClick}
           activeSketchFaceId={sketchPlaneActive ? sketchFaceId : null}
           cutouts={cutouts}
-          useCADKernel={useCADKernel}
+          kFactor={kFactor}
+          modelResult={modelResult}
+          modelLoading={modelLoading}
         />
 
-        {/* Sketch plane when active */}
+        {/* Sketch plane when active — uses face registry transforms */}
         {sketchPlaneActive && sketchFaceOrigin && onSketchAddEntity && onSketchRemoveEntity && onSketchSelectEntity && (() => {
           const isFoldFace = sketchFaceId?.startsWith('fold_face_');
           const isFlangeFace = sketchFaceId?.startsWith('flange_face_');
-          
-          if (isFoldFace) {
-            const foldId = sketchFaceId!.replace('fold_face_', '');
-            const fold = folds.find(f => f.id === foldId);
-            if (!fold) return null;
-            
-            const foldEdge = computeFoldEdge(profile, thickness, fold);
-            const tangent = new THREE.Vector3().subVectors(foldEdge.end, foldEdge.start).normalize();
-            const normal = foldEdge.normal.clone();
-            const dSign = fold.direction === 'up' ? 1 : -1;
-            const angleRad = fold.angle * Math.PI / 180;
-            
-            const q = new THREE.Quaternion().setFromAxisAngle(tangent, -dSign * angleRad);
-            const bentNormal = normal.clone().applyQuaternion(q);
-            const bentUp = new THREE.Vector3(0, 0, dSign).applyQuaternion(q);
-            
-            const m = new THREE.Matrix4();
-            m.makeBasis(tangent, bentNormal, bentUp);
-            // Position at fold edge, offset to outer surface
-            const outerOrigin = foldEdge.start.clone().add(bentUp.clone().multiplyScalar(thickness));
-            m.setPosition(outerOrigin);
-            
-            return (
-              <group matrixAutoUpdate={false} matrix={m}>
-                <FaceSketchPlane
-                  faceOrigin={{ x: 0, y: 0 }}
-                  faceWidth={sketchFaceWidth!}
-                  faceHeight={sketchFaceHeight!}
-                  thickness={0}
-                  surfaceZ={0.02}
-                  worldTransform={m}
-                  entities={sketchEntities || []}
-                  activeTool={sketchActiveTool || 'line'}
-                  gridSize={sketchGridSize || 5}
-                  snapEnabled={sketchSnapEnabled ?? true}
-                  onAddEntity={onSketchAddEntity}
-                  onUpdateEntity={onSketchUpdateEntity}
-                  onRemoveEntity={onSketchRemoveEntity}
-                  selectedIds={sketchSelectedIds || []}
-                  onSelectEntity={onSketchSelectEntity}
-                  onDeselectAll={onSketchDeselectAll || (() => {})}
-                />
-              </group>
-            );
-          }
 
-          if (isFlangeFace) {
-            const flangeId = sketchFaceId!.replace('flange_face_', '');
-            const flange = flanges.find(f => f.id === flangeId);
-            if (!flange) return null;
-
-            // Find the parent edge for this flange
-            const allEdges = getAllSelectableEdges(profile, thickness, flanges, folds);
-            const parentEdge = allEdges.find(e => e.id === flange.edgeId);
-            if (!parentEdge) return null;
-
-            const bendAngleRad = (flange.angle * Math.PI) / 180;
-            const dirSign = flange.direction === 'up' ? 1 : -1;
-            const R = flange.bendRadius;
-
-            const uDir = parentEdge.normal.clone().normalize();
-            const wDir = parentEdge.faceNormal.clone().multiplyScalar(dirSign);
-            const edgeDir = new THREE.Vector3().subVectors(parentEdge.end, parentEdge.start).normalize();
-
-            // Arc end position (inner surface)
-            const sinA = Math.sin(bendAngleRad);
-            const cosA = Math.cos(bendAngleRad);
-            const arcEndU = R * sinA;
-            const arcEndW = R * (1 - cosA);
-
-            // Tangent direction at end of arc (flat extension direction)
-            const flangeExtDir = uDir.clone().multiplyScalar(cosA).add(wDir.clone().multiplyScalar(sinA)).normalize();
-            // Surface normal of the flange (perpendicular to flange surface)
-            const flangeSurfaceNormal = uDir.clone().multiplyScalar(sinA).add(wDir.clone().multiplyScalar(-cosA)).normalize();
-
-            // Origin of the flange flat surface (at arc end, outer surface facing camera)
-            const flangeOrigin = parentEdge.start.clone()
-              .add(uDir.clone().multiplyScalar(arcEndU))
-              .add(wDir.clone().multiplyScalar(arcEndW))
-              .add(flangeSurfaceNormal.clone().multiplyScalar(thickness));
-
-            // Build transform: X=edgeDir, Y=flangeExtDir, Z=flangeSurfaceNormal
-            const m = new THREE.Matrix4();
-            m.makeBasis(edgeDir, flangeExtDir, flangeSurfaceNormal);
-            m.setPosition(flangeOrigin);
+          if (isFoldFace || isFlangeFace) {
+            const ft = getFaceTransform(sketchFaceId!);
+            if (!ft) return null;
+            const m = faceTransformToMatrix4(ft);
 
             return (
               <group matrixAutoUpdate={false} matrix={m}>
@@ -1219,7 +657,8 @@ export function Viewer3D({
               </group>
             );
           }
-          
+
+          // Base face sketch plane
           return (
             <FaceSketchPlane
               faceOrigin={sketchFaceOrigin!}
@@ -1265,24 +704,6 @@ export function Viewer3D({
       >
         <Home className="h-4 w-4" />
       </button>
-
-      <button
-        onClick={runGeometryDebug}
-        className="absolute bottom-[172px] right-[64px] w-8 h-8 flex items-center justify-center rounded bg-card/80 border border-border/50 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors shadow-sm"
-        title="Debug geometry"
-      >
-        <Bug className="h-4 w-4" />
-      </button>
-
-      {debugInfo && (
-        <div className="absolute top-4 left-4 max-w-[600px] max-h-[80vh] overflow-auto bg-card/95 border border-border rounded-lg shadow-lg p-4 z-50">
-          <div className="flex justify-between items-center mb-2">
-            <span className="font-mono text-sm font-bold text-foreground">Geometry Debug</span>
-            <button onClick={() => setDebugInfo(null)} className="text-muted-foreground hover:text-foreground text-xs px-2 py-1 border border-border rounded">Close</button>
-          </div>
-          <pre className="text-xs font-mono whitespace-pre-wrap text-foreground/80">{debugInfo}</pre>
-        </div>
-      )}
 
       {children}
     </div>
