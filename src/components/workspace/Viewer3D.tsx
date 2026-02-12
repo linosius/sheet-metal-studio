@@ -242,10 +242,10 @@ function SheetMetalMesh({
       >
         <meshStandardMaterial
           color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#d4d8dd'}
-          metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+          metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
         />
       </mesh>
-      <MeshEdgeOutline geometry={modelResult.baseFace} />
+      {!isViewMode && <MeshEdgeOutline geometry={modelResult.baseFace} />}
 
       {/* Boundary edges from API – kept as data only, not rendered (ghost edge fix) */}
       {false && (
@@ -279,10 +279,10 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
               />
             </mesh>
-            <MeshEdgeOutline geometry={fold.arc} />
+            {!isViewMode && <MeshEdgeOutline geometry={fold.arc} />}
             <mesh
               geometry={fold.tip}
               userData={{ faceId: foldFaceId }}
@@ -300,10 +300,10 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
               />
             </mesh>
-            <MeshEdgeOutline geometry={fold.tip} />
+            {!isViewMode && <MeshEdgeOutline geometry={fold.tip} />}
           </group>
         );
       })}
@@ -332,10 +332,10 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial
                 color={isSketchMode && isHovered ? '#93c5fd' : '#d4d8dd'}
-                metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
+                metalness={0.08} roughness={0.65} side={THREE.DoubleSide} flatShading
               />
             </mesh>
-            <MeshEdgeOutline geometry={flange.mesh} />
+            {!isViewMode && <MeshEdgeOutline geometry={flange.mesh} />}
           </group>
         );
       })}
