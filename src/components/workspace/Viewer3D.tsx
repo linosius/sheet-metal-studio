@@ -215,7 +215,7 @@ function SheetMetalMesh({
         geometry={modelResult.baseFace}
         userData={{ faceType: 'base' }}
         
-        raycast={(activeSketchFaceId === 'base_top' || activeSketchFaceId === 'base_bot' || isFoldMode) ? noopRaycast as any : undefined}
+        
         onClick={(e) => {
           console.log('[BaseFace] clicked, isSketchMode:', isSketchMode, 'onFaceClick:', !!onFaceClick, 'intersections:', e.intersections.length, e.intersections.map(i => i.object.userData));
           if (isSketchMode && onFaceClick) {
@@ -265,7 +265,7 @@ function SheetMetalMesh({
               geometry={fold.arc}
               userData={{ faceId: foldFaceId }}
               
-              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
+              
               onClick={(e) => {
                 console.log('[FoldArc] clicked, faceId:', foldFaceId, 'isSketchMode:', isSketchMode);
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
@@ -287,7 +287,7 @@ function SheetMetalMesh({
               geometry={fold.tip}
               userData={{ faceId: foldFaceId }}
               
-              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
+              
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
               }}
@@ -319,7 +319,7 @@ function SheetMetalMesh({
               geometry={flange.mesh}
               userData={{ faceId: flangeFaceId }}
               
-              raycast={(isActive || isFoldMode) ? noopRaycast as any : undefined}
+              
               onClick={(e) => {
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
               }}
