@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { GitBranch } from 'lucide-react';
+import { GitBranch, Bug } from 'lucide-react';
 import { Box, ArrowLeft, ArrowRight, MousePointer2, Scissors, PenLine, Undo2, Redo2 } from 'lucide-react';
 import { ExportPanel } from '@/components/workspace/ExportPanel';
 import { Button } from '@/components/ui/button';
@@ -527,6 +527,48 @@ export default function Workspace() {
         <WorkflowBar currentStep={currentStep} onStepClick={handleStepClick} />
 
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 text-xs gap-1.5"
+            onClick={async () => {
+              toast.info('Sending debug request to API...');
+              try {
+                const testPayload = {
+                  profile: profile ?? [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 60 }, { x: 0, y: 60 }],
+                  thickness: sketch.sheetMetalDefaults.thickness,
+                  cutouts: [],
+                  folds: [],
+                  flanges: [],
+                  faceSketches: [],
+                  bendTable: { type: 'kFactor', defaultKFactor: sketch.sheetMetalDefaults.kFactor, overrides: [] },
+                };
+                console.log('[DEBUG] Request payload:', JSON.stringify(testPayload, null, 2));
+                const res = await fetch('https://api.metal-hero.com/api/v1/build-model', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(testPayload),
+                });
+                const text = await res.text();
+                console.log('[DEBUG] Response status:', res.status);
+                console.log('[DEBUG] Response body:', text);
+                try {
+                  const json = JSON.parse(text);
+                  toast.success(`API responded: ${res.status}`, {
+                    description: JSON.stringify(json).slice(0, 200),
+                    duration: 10000,
+                  });
+                } catch {
+                  toast.success(`API responded: ${res.status}`, { description: text.slice(0, 200), duration: 10000 });
+                }
+              } catch (err: any) {
+                console.error('[DEBUG] Fetch error:', err);
+                toast.error('API unreachable', { description: err.message, duration: 10000 });
+              }
+            }}
+          >
+            <Bug className="h-3 w-3" /> Debug API
+          </Button>
           {currentStep === 'sketch' && (
             <Button size="sm" className="h-8 text-xs gap-1.5" disabled={!canConvert} onClick={handleConvertToBaseFace}>
               Convert to Base Face
