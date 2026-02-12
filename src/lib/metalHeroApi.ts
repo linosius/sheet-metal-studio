@@ -117,12 +117,32 @@ export interface UnfoldResponse {
 
 export function meshDataToBufferGeometry(data: MeshData): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
+  const posArr = new Float32Array(data.positions);
+  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+
   if (data.indices && data.indices.length > 0) {
-    geo.setIndex(data.indices);
+    geo.setIndex(Array.from(data.indices));
   }
-  // Always compute normals – API normals may be missing, zero, or inverted
+
+  // Compute normals
   geo.computeVertexNormals();
+
+  // Safety: if normals contain NaN (degenerate triangles), replace with (0,0,1)
+  const normAttr = geo.getAttribute('normal');
+  if (normAttr) {
+    const arr = normAttr.array as Float32Array;
+    let hasNaN = false;
+    for (let i = 0; i < arr.length; i++) {
+      if (isNaN(arr[i])) { arr[i] = i % 3 === 2 ? 1 : 0; hasNaN = true; }
+    }
+    if (hasNaN) {
+      console.warn('[meshDataToBufferGeometry] Fixed NaN normals');
+      normAttr.needsUpdate = true;
+    }
+  }
+
+  console.log('[meshDataToBufferGeometry] positions:', data.positions.length / 3, 'verts, indices:', data.indices?.length ?? 0, 'hasNormals:', !!normAttr);
+
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
   return geo;
