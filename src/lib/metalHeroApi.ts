@@ -116,32 +116,30 @@ export interface UnfoldResponse {
 // ========== Geometry Conversion ==========
 
 export function meshDataToBufferGeometry(data: MeshData): THREE.BufferGeometry {
-  const geo = new THREE.BufferGeometry();
-  const posArr = new Float32Array(data.positions);
-  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+  let geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
 
   if (data.indices && data.indices.length > 0) {
     geo.setIndex(Array.from(data.indices));
   }
 
-  // Compute normals
-  geo.computeVertexNormals();
-
-  // Safety: if normals contain NaN (degenerate triangles), replace with (0,0,1)
-  const normAttr = geo.getAttribute('normal');
-  if (normAttr) {
-    const arr = normAttr.array as Float32Array;
-    let hasNaN = false;
-    for (let i = 0; i < arr.length; i++) {
-      if (isNaN(arr[i])) { arr[i] = i % 3 === 2 ? 1 : 0; hasNaN = true; }
+  // Prefer API-provided normals (they preserve hard edges from the B-Rep kernel)
+  if (data.normals && data.normals.length > 0) {
+    let allZero = true;
+    for (let i = 0; i < Math.min(data.normals.length, 30); i++) {
+      if (data.normals[i] !== 0) { allZero = false; break; }
     }
-    if (hasNaN) {
-      console.warn('[meshDataToBufferGeometry] Fixed NaN normals');
-      normAttr.needsUpdate = true;
+    if (!allZero) {
+      geo.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
+    } else {
+      if (geo.index) geo = geo.toNonIndexed();
+      geo.computeVertexNormals();
     }
+  } else {
+    // No normals — convert to non-indexed for proper flat face normals
+    if (geo.index) geo = geo.toNonIndexed();
+    geo.computeVertexNormals();
   }
-
-  console.log('[meshDataToBufferGeometry] positions:', data.positions.length / 3, 'verts, indices:', data.indices?.length ?? 0, 'hasNormals:', !!normAttr);
 
   geo.computeBoundingBox();
   geo.computeBoundingSphere();
