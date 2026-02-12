@@ -239,8 +239,8 @@ function SheetMetalMesh({
         />
       </mesh>
 
-      {/* Boundary edges from API */}
-      {!isViewMode && !isEdgeMode && (
+      {/* Boundary edges from API – kept as data only, not rendered (ghost edge fix) */}
+      {false && (
         <lineSegments geometry={modelResult.boundaryEdges}>
           <lineBasicMaterial color="#475569" linewidth={1} />
         </lineSegments>
