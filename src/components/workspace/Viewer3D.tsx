@@ -38,7 +38,7 @@ interface SheetMetalMeshProps {
 const noopRaycast = () => {};
 
 // Edge outline helper – renders dark wireframe lines along hard edges
-function MeshEdgeOutline({ geometry, color = '#2d3748', thresholdAngle = 20 }: {
+function MeshEdgeOutline({ geometry, color = '#94a3b8', thresholdAngle = 20 }: {
   geometry: THREE.BufferGeometry; color?: string; thresholdAngle?: number;
 }) {
   const edgesGeo = useMemo(() => {
