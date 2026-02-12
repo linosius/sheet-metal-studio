@@ -234,8 +234,8 @@ function SheetMetalMesh({
         }}
       >
         <meshStandardMaterial
-          color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#bcc2c8'}
-          metalness={0.12} roughness={0.55} side={THREE.DoubleSide}
+          color={isSketchMode && baseFaceHovered ? '#93c5fd' : '#d4d8dd'}
+          metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
         />
       </mesh>
 
@@ -259,7 +259,7 @@ function SheetMetalMesh({
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
               }}
             >
-              <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
             </mesh>
             <mesh
               geometry={fold.tip}
@@ -269,7 +269,7 @@ function SheetMetalMesh({
                 if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(foldFaceId); }
               }}
             >
-              <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
             </mesh>
           </group>
         );
@@ -288,7 +288,7 @@ function SheetMetalMesh({
               if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
             }}
           >
-            <meshStandardMaterial color="#bcc2c8" metalness={0.12} roughness={0.55} side={THREE.DoubleSide} />
+            <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
           </mesh>
         );
       })}
