@@ -37,6 +37,20 @@ interface SheetMetalMeshProps {
 
 const noopRaycast = () => {};
 
+// Edge outline helper – renders dark wireframe lines along hard edges
+function MeshEdgeOutline({ geometry, color = '#2d3748', thresholdAngle = 20 }: {
+  geometry: THREE.BufferGeometry; color?: string; thresholdAngle?: number;
+}) {
+  const edgesGeo = useMemo(() => {
+    return new THREE.EdgesGeometry(geometry, thresholdAngle);
+  }, [geometry, thresholdAngle]);
+  return (
+    <lineSegments geometry={edgesGeo} raycast={noopRaycast as any}>
+      <lineBasicMaterial color={color} linewidth={1} />
+    </lineSegments>
+  );
+}
+
 // ========== Sketch Entity 3D Renderers ==========
 
 function SketchLine3D({
@@ -238,6 +252,7 @@ function SheetMetalMesh({
           metalness={0.08} roughness={0.65} side={THREE.DoubleSide}
         />
       </mesh>
+      <MeshEdgeOutline geometry={modelResult.baseFace} />
 
       {/* Boundary edges from API – kept as data only, not rendered (ghost edge fix) */}
       {false && (
@@ -261,6 +276,7 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
             </mesh>
+            <MeshEdgeOutline geometry={fold.arc} />
             <mesh
               geometry={fold.tip}
               userData={{ faceId: foldFaceId }}
@@ -271,6 +287,7 @@ function SheetMetalMesh({
             >
               <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
             </mesh>
+            <MeshEdgeOutline geometry={fold.tip} />
           </group>
         );
       })}
@@ -279,17 +296,19 @@ function SheetMetalMesh({
       {modelResult.flanges.map(flange => {
         const flangeFaceId = `flange_face_${flange.id}`;
         return (
-          <mesh
-            key={flange.id}
-            geometry={flange.mesh}
-            userData={{ faceId: flangeFaceId }}
-            raycast={(activeSketchFaceId === flangeFaceId || isFoldMode) ? noopRaycast as any : undefined}
-            onClick={(e) => {
-              if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
-            }}
-          >
-            <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
-          </mesh>
+          <group key={flange.id}>
+            <mesh
+              geometry={flange.mesh}
+              userData={{ faceId: flangeFaceId }}
+              raycast={(activeSketchFaceId === flangeFaceId || isFoldMode) ? noopRaycast as any : undefined}
+              onClick={(e) => {
+                if (isSketchMode && onFaceClick) { e.stopPropagation(); onFaceClick(flangeFaceId); }
+              }}
+            >
+              <meshStandardMaterial color="#d4d8dd" metalness={0.08} roughness={0.65} side={THREE.DoubleSide} />
+            </mesh>
+            <MeshEdgeOutline geometry={flange.mesh} />
+          </group>
         );
       })}
 
