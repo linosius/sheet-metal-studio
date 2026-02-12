@@ -1,120 +1,332 @@
 
-# Umbau auf parametrisches Modell mit OpenCascade.js CAD-Kernel
+# Umstellung: Frontend 2D + Backend 3D mit eindeutigem Face-Naming
 
-## Warum der Umbau notwendig ist
+## Grundprinzip
 
-Das aktuelle System baut 3D-Geometrie direkt als Dreiecks-Meshes auf (~2.865 Zeilen in `geometry.ts`). Jede Interaktion zwischen Folds und Cutouts erfordert manuelle Topologie-Hacks (Sidewall-Suppression, Crossing-Detection, Arc-Hole-Walls). Diese Hacks versagen bei Kreisen, schraegen Folds und komplexen Kombinationen, weil das System kein topologisches Modell hat -- es arbeitet nur mit Dreiecken und Polygonen.
+**Frontend (Lovable):** Nur 2D-Operationen -- Sketch, Profil-Extraktion, Cutout-Erkennung, Face-Sketch-Zeichnung. Keine Bend-Berechnungen, keine Mesh-Erzeugung, kein Unfold.
 
-Ein CAD-Kernel wie OpenCascade (OCCT) arbeitet mit **B-Rep** (Boundary Representation): Faces, Edges und Vertices als topologische Entitaeten. Operationen wie Extrusion, Boolean-Cut und Biegung sind mathematisch exakt. Das Mesh wird erst am Ende fuer die Visualisierung erzeugt (Tessellation).
+**Backend (api.metal-hero.com):** Alle 3D-Operationen -- Extrusion, Boolean-Cuts, Bend/Fold-Berechnung (inkl. Bend Allowance, K-Factor, Neutral Axis), Mesh-Tessellation, Unfold/Flat-Pattern.
 
-## Technologie-Wahl: OpenCascade.js
+## Face-Naming-Konvention (Shared Contract)
 
-**opencascade.js** ist ein WASM-Port der OpenCascade-Bibliothek (die auch FreeCAD und andere professionelle CAD-Tools verwenden). Es bietet:
-
-- `BRepPrimAPI_MakePrism`: Extrusion eines 2D-Profils zu einem Solid
-- `BRepAlgoAPI_Cut`: Boolean-Subtraktion fuer Cutouts (immer topologisch korrekt)
-- `BRepBuilderAPI_Transform`: Geometrische Transformationen
-- `BRepMesh_IncrementalMesh`: Tessellation zu Dreiecken fuer Three.js
-- `BRepFilletAPI_MakeFillet`: Verrundungen
-
-**Groesse**: ~30MB WASM (kann mit Custom Build auf ~5-10MB reduziert werden). Wird asynchron geladen.
-
-## Architektur-Uebersicht
+Jede Face hat eine eindeutige ID die sowohl Frontend als auch Backend kennen. Das Frontend nutzt diese IDs um Sketches einer Face zuzuordnen. Das Backend nutzt sie um Geometrie-Ergebnisse den richtigen Faces zuzuweisen.
 
 ```text
-+------------------+     +-------------------+     +------------------+
-|  2D Sketch       | --> |  CAD Kernel       | --> |  Three.js        |
-|  (besteht)       |     |  (NEU)            |     |  Viewer          |
-|                  |     |                   |     |  (vereinfacht)   |
-|  SketchEntities  |     |  B-Rep Solid      |     |  Tessellation    |
-|  Fold-Defs       |     |  Boolean Ops      |     |  -> Mesh         |
-|  Cutout-Defs     |     |  Bend/Transform   |     |  -> Edges        |
-+------------------+     +-------------------+     +------------------+
+Format: {part}:{side}
+
+Beispiele:
+  base:top              -- Oberseite der Grundplatte
+  base:bot              -- Unterseite der Grundplatte
+  fold_{id}:top         -- Aussenseite des Fold-Tip-Panels
+  fold_{id}:bot         -- Innenseite des Fold-Tip-Panels
+  fold_{id}:left        -- Linke Seitenkante des Folds
+  fold_{id}:right       -- Rechte Seitenkante des Folds
+  flange_{id}:outer     -- Aussenseite der Flange
+  flange_{id}:inner     -- Innenseite der Flange
+  flange_{id}:left      -- Linke Seitenkante der Flange
+  flange_{id}:right     -- Rechte Seitenkante der Flange
 ```
 
-## Implementierungsplan (4 Phasen)
+Das Backend gibt in der Response eine Liste aller existierenden Faces mit ihren Transforms zurueck, damit das Frontend weiss wo eine Face im 3D-Raum liegt (fuer die Sketch-Ebene).
 
-### Phase 1: OpenCascade.js Integration + Base Face (Grundlage)
+## API-Dokumentation
 
-**Neue Dateien:**
-- `src/lib/cadKernel.ts` -- Wrapper um OpenCascade.js API
-- `src/lib/cadInit.ts` -- Asynchrones Laden des WASM-Moduls
+### POST /api/v1/build-model
 
-**Aenderungen:**
-- `package.json`: `opencascade.js` als Dependency hinzufuegen
-- `vite.config.ts`: WASM-Support konfigurieren (Copy Plugin fuer .wasm Dateien)
-
-**Kernfunktionen in `cadKernel.ts`:**
-1. `initOCCT()` -- WASM laden, Singleton-Instanz bereitstellen
-2. `createSheetFromProfile(profile, thickness)` -- 2D-Profil zu `TopoDS_Shape` extrudieren
-3. `cutHoles(solid, cutouts[])` -- Boolean-Subtraktion fuer alle Cutouts
-4. `tessellate(shape)` -- B-Rep zu Three.js BufferGeometry konvertieren
-5. `extractEdges(shape)` -- Topologische Kanten extrahieren fuer Boundary-Lines
-
-**Was das ersetzt:** `createBaseFaceMesh`, `buildBaseFaceManual`, `computeBoundaryEdges`, `profileToShape`, alle Sidewall-Logik (~500 Zeilen)
-
-### Phase 2: Fold/Bend als B-Rep-Operation
-
-**Neue Funktionen in `cadKernel.ts`:**
-1. `applyBend(solid, foldLine, angle, radius, thickness)` -- Solid an der Foldlinie teilen, Biegezone als Sweep erzeugen, Teile zusammenfuegen
-2. `splitSolidAtLine(solid, linePoint, lineNormal)` -- Solid mit einer Ebene teilen (BRepAlgoAPI_Section + BRepAlgoAPI_Cut)
-
-**Algorithmus fuer Bend:**
-```text
-1. Ebene definieren an der Foldlinie
-2. Solid in Fixed + Moving teilen (BRepAlgoAPI_Cut mit Half-Space)
-3. Moving-Teil um Biegeachse rotieren (gp_Trsf Rotation)
-4. Biegezone erzeugen: 
-   - Querschnitt an der Foldlinie extrahieren
-   - Entlang Kreisbogen sweepen (BRepOffsetAPI_MakePipe oder manuell)
-5. Alle 3 Teile vereinigen (BRepAlgoAPI_Fuse)
-6. Cutouts die durch die Biegezone gehen werden automatisch
-   korrekt behandelt -- die Boolean-Ops arbeiten auf der Topologie
+**Request:**
+```json
+{
+  "profile": [
+    { "x": 0, "y": 0 },
+    { "x": 100, "y": 0 },
+    { "x": 100, "y": 60 },
+    { "x": 0, "y": 60 }
+  ],
+  "thickness": 1.0,
+  "cutouts": [
+    {
+      "type": "circle",
+      "center": { "x": 50, "y": 30 },
+      "radius": 8,
+      "polygon": [{ "x": 58, "y": 30 }, "..."]
+    }
+  ],
+  "folds": [
+    {
+      "id": "fold_1",
+      "lineStart": { "x": 0, "y": 20 },
+      "lineEnd": { "x": 100, "y": 20 },
+      "angle": 90,
+      "direction": "up",
+      "bendRadius": 1.0,
+      "kFactor": 0.44,
+      "foldLocation": "centerline",
+      "parentFaceId": "base:top"
+    }
+  ],
+  "flanges": [
+    {
+      "id": "flange_1",
+      "edgeId": "edge_base_top_0",
+      "height": 20,
+      "angle": 90,
+      "direction": "up",
+      "bendRadius": 1.0,
+      "kFactor": 0.44
+    }
+  ],
+  "faceSketches": [
+    {
+      "faceId": "fold_1:top",
+      "side": "top",
+      "entities": [
+        {
+          "id": "circle_1",
+          "type": "circle",
+          "center": { "x": 50, "y": 10 },
+          "radius": 5
+        }
+      ]
+    }
+  ],
+  "bendTable": {
+    "type": "kFactor",
+    "defaultKFactor": 0.44,
+    "overrides": []
+  }
+}
 ```
 
-**Was das ersetzt:** `createFoldMesh` (~700 Zeilen), `computeFoldBlockedIntervalsTD`, `complementIntervals`, `computeFoldLineInfo`, `getFixedProfile`, `getMovingCutouts`, `getFixedCutouts`, alle Segment-basierte Topologie-Logik (~1.500 Zeilen)
+Wichtige Punkte:
+- `faceSketches` referenziert Faces ueber die eindeutige `faceId` (z.B. `fold_1:top`)
+- Alle Bend-Parameter (kFactor, bendRadius, bendTable) werden mitgeschickt -- das Backend rechnet
+- Cutout-Polygone werden im Frontend aus Sketch-Entities erzeugt (Kreis -> Polygon, Rect -> 4 Punkte)
+- Face-Sketches auf Fold/Flange-Faces werden als Cutouts oder Fold-Definitionen auf diesen Faces interpretiert
 
-### Phase 3: Flanges + Viewer-Vereinfachung
+**Response:**
+```json
+{
+  "success": true,
+  "model": {
+    "meshes": {
+      "baseFace": {
+        "positions": [0, 0, 0, "..."],
+        "normals": [0, 0, 1, "..."],
+        "indices": [0, 1, 2, "..."]
+      },
+      "folds": [
+        {
+          "id": "fold_1",
+          "arc": { "positions": ["..."], "normals": ["..."], "indices": ["..."] },
+          "tip": { "positions": ["..."], "normals": ["..."], "indices": ["..."] }
+        }
+      ],
+      "flanges": [
+        {
+          "id": "flange_1",
+          "mesh": { "positions": ["..."], "normals": ["..."], "indices": ["..."] }
+        }
+      ]
+    },
+    "boundaryEdges": {
+      "positions": [0, 0, 0, 100, 0, 0, "..."]
+    },
+    "faces": [
+      {
+        "faceId": "base:top",
+        "origin": [0, 0, 1],
+        "xAxis": [1, 0, 0],
+        "yAxis": [0, 1, 0],
+        "normal": [0, 0, 1],
+        "width": 100,
+        "height": 60
+      },
+      {
+        "faceId": "base:bot",
+        "origin": [0, 0, 0],
+        "xAxis": [1, 0, 0],
+        "yAxis": [0, 1, 0],
+        "normal": [0, 0, -1],
+        "width": 100,
+        "height": 60
+      },
+      {
+        "faceId": "fold_1:top",
+        "origin": [0, 20, 1],
+        "xAxis": [1, 0, 0],
+        "yAxis": [0, 0, 1],
+        "normal": [0, -1, 0],
+        "width": 100,
+        "height": 40
+      },
+      {
+        "faceId": "fold_1:bot",
+        "origin": [0, 20, 0],
+        "xAxis": [1, 0, 0],
+        "yAxis": [0, 0, 1],
+        "normal": [0, 1, 0],
+        "width": 100,
+        "height": 40
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge_base_top_0",
+        "faceId": "base:top",
+        "start": [0, 0, 1],
+        "end": [100, 0, 1],
+        "normal": [0, -1, 0],
+        "faceNormal": [0, 0, 1]
+      }
+    ]
+  }
+}
+```
 
-**Aenderungen in `cadKernel.ts`:**
-1. `applyFlange(solid, edgeId, height, angle, radius)` -- Flange als Bend an einer Kante
+Die `faces`-Liste ist entscheidend: Sie liefert dem Frontend fuer jede Face ein lokales Koordinatensystem (origin, xAxis, yAxis, normal, Dimensionen). Damit kann `FaceSketchPlane` die Sketch-Ebene exakt positionieren, ohne selbst Bend-Geometrie berechnen zu muessen.
 
-**Aenderungen in `Viewer3D.tsx`:**
-- Drastische Vereinfachung: Statt separate `FlangeMesh`, `FoldMesh`, `BaseFaceMesh` Komponenten wird ein einzelnes tesselliertes Mesh gerendert
-- Edge-Highlighting direkt aus der B-Rep-Topologie
-- Face-Selection ueber topologische Face-IDs
+---
 
-**Was das ersetzt:** `createFlangeMesh` (~200 Zeilen), `FlangeMesh` + `FoldMesh` Komponenten in Viewer3D.tsx
+### POST /api/v1/unfold
 
-### Phase 4: Unfold aus B-Rep
+**Request:**
+```json
+{
+  "profile": [{ "x": 0, "y": 0 }, "..."],
+  "thickness": 1.0,
+  "cutouts": ["..."],
+  "folds": ["..."],
+  "flanges": ["..."],
+  "faceSketches": ["..."],
+  "bendTable": {
+    "type": "kFactor",
+    "defaultKFactor": 0.44
+  }
+}
+```
 
-**Aenderungen in `cadKernel.ts`:**
-1. `unfoldSheet(solid, bendInfo[])` -- Flat Pattern aus dem B-Rep berechnen
-   - Biegezonenlaenge ueber Bend Allowance (bestehende Formel)
-   - Faces ruecktransformieren in die Ebene
+(Identisch mit build-model, damit das Backend den gleichen Modellzustand hat.)
 
-**Was das ersetzt:** `src/lib/unfold.ts` (~200 Zeilen)
+**Response:**
+```json
+{
+  "success": true,
+  "flatPattern": {
+    "regions": [
+      {
+        "id": "base",
+        "faceId": "base:top",
+        "polygon": [{ "x": 0, "y": 0 }, "..."],
+        "cutouts": [{ "type": "circle", "center": { "x": 50, "y": 30 }, "radius": 8 }]
+      },
+      {
+        "id": "fold_1_tip",
+        "faceId": "fold_1:top",
+        "polygon": [{ "x": 0, "y": 20.5 }, "..."],
+        "cutouts": []
+      }
+    ],
+    "bendLines": [
+      {
+        "foldId": "fold_1",
+        "start": { "x": 0, "y": 20 },
+        "end": { "x": 100, "y": 20 },
+        "angle": 90,
+        "radius": 1.0,
+        "label": "F1"
+      }
+    ],
+    "boundingBox": { "minX": 0, "minY": 0, "maxX": 100, "maxY": 100 }
+  }
+}
+```
 
-## Dateien die sich aendern
+---
 
-| Datei | Aenderung |
+## Aenderungen im Frontend
+
+### Neue Datei: `src/lib/metalHeroApi.ts`
+API-Client mit:
+- `buildModel(params)` -- POST /api/v1/build-model
+- `unfoldModel(params)` -- POST /api/v1/unfold
+- Response-Arrays zu `THREE.BufferGeometry` konvertieren
+- Face-Liste parsen und als `Map<string, FaceTransform>` bereitstellen
+- API-Key aus Secret lesen
+- Error Handling, Retry, Debouncing
+
+### Neue Datei: `src/lib/faceRegistry.ts`
+Zentrale Face-Verwaltung:
+- `FaceTransform`-Typ: origin, xAxis, yAxis, normal, width, height
+- Face-Map wird nach jedem `build-model`-Call aktualisiert
+- `getFaceTransform(faceId)` fuer FaceSketchPlane
+- `getSelectableEdges(faceId)` fuer Flange-Erstellung
+
+### Geaendert: `src/lib/geometry.ts` (~2865 -> ~400 Zeilen)
+Entfernt:
+- Alle 3D-Mesh-Builder (`buildBaseFaceManual`, `createBaseFaceMesh`, `createFoldMesh`, `createFlangeMesh`, `MeshBuilder`, alle Sidewall/Crossing-Logik)
+- Alle Bend-Berechnungen (`computeFoldBendLines`, `computeBendLinePositions`, `computeFoldBlockedIntervalsTD`)
+- `computeBoundaryEdges`, `getAllSelectableEdges` (kommt vom Backend)
+- `computeFlangeFaceTransform`, `computeFoldFaceTransform` (kommt vom Backend)
+
+Behalten:
+- Typ-Definitionen (`PartEdge`, `Flange`, `Fold`, `FaceSketch`, `FaceSketchEntity`, `ProfileCutout`)
+- `extractProfile`, `extractEdges` (2D-Profil aus Sketch-Entities)
+- `circleToPolygon`, `rectToPolygon` (2D-Cutout-Konvertierung)
+- `classifySketchLineAsFold` (2D-Klassifizierung ob eine Linie ein Fold ist)
+
+Face-ID-Schema anpassen: `base_top` -> `base:top`, `base_bot` -> `base:bot`, etc.
+
+### Geaendert: `src/components/workspace/Viewer3D.tsx`
+- `SheetMetalMesh` wird async: `useEffect` + `useState` statt `useMemo`
+- Ruft `metalHeroApi.buildModel()` auf
+- Rendert einzelnes Mesh aus Response (kein separates `FlangeMesh`, `FoldMesh`)
+- Face-Liste aus Response wird in `faceRegistry` gespeichert
+- Loading-Spinner waehrend API-Call
+- Debounce: 300ms nach letzter Aenderung
+
+### Geaendert: `src/components/workspace/FaceSketchPlane.tsx`
+- Liest `worldTransform` aus `faceRegistry.getFaceTransform(faceId)` statt lokaler Berechnung
+- Face-Dimensionen kommen aus der Face-Registry
+
+### Geaendert: `src/components/workspace/UnfoldViewer.tsx`
+- Ruft `metalHeroApi.unfoldModel()` auf statt lokales `computeFlatPattern()`
+- Loading-State
+
+### Geaendert: `src/pages/Workspace.tsx`
+- Entfernt: WASM-Init (`initOCCT`, `isOCCTReady`, `occtReady`)
+- API-Key Konfiguration
+
+### Entfernt: `src/lib/unfold.ts`
+Typen (`FlatPattern`, `FlatRegion`, `BendLine`) werden in `geometry.ts` behalten.
+
+### Entfernt: `src/lib/cadInit.ts`
+Kein WASM-Laden mehr.
+
+### Geaendert: `src/lib/cadKernel.ts`
+Entfernt oder zu reinem Re-Export von `metalHeroApi` umgewandelt.
+
+## Implementierungsreihenfolge
+
+1. `faceRegistry.ts` erstellen (Face-Naming-Konvention, Typen)
+2. `metalHeroApi.ts` erstellen (API-Client)
+3. `Viewer3D.tsx` auf async API-Calls umbauen
+4. `FaceSketchPlane.tsx` auf Face-Registry umstellen
+5. `UnfoldViewer.tsx` auf API umstellen
+6. `geometry.ts` aufraeumen (3D-Code entfernen)
+7. `cadInit.ts`, `cadKernel.ts`, `unfold.ts` entfernen/vereinfachen
+8. `Workspace.tsx` vereinfachen
+
+## Technische Details
+
+| Datei | Aktion |
 |---|---|
-| `package.json` | +opencascade.js Dependency |
-| `vite.config.ts` | WASM Config |
-| `src/lib/cadKernel.ts` | NEU: Gesamter CAD-Kernel-Wrapper |
-| `src/lib/cadInit.ts` | NEU: Async WASM Loader |
-| `src/lib/geometry.ts` | Schrittweise ersetzen, am Ende ~500 Zeilen statt ~2.865 |
-| `src/components/workspace/Viewer3D.tsx` | Drastisch vereinfacht (~400 Zeilen statt ~1.269) |
-| `src/lib/unfold.ts` | Vereinfacht, nutzt cadKernel |
-| `src/pages/Workspace.tsx` | Loading-State fuer WASM-Init |
-
-## Risiken und Einschraenkungen
-
-1. **WASM Bundle-Groesse**: ~30MB Download beim ersten Laden (kann mit Custom Build reduziert werden, aber nicht in Lovable moeglich -- muss als fertiges npm-Paket verwendet werden)
-2. **Ladezeit**: OCCT-Initialisierung dauert 2-5 Sekunden -- braucht Loading-Indikator
-3. **Sheet Metal Bending**: OCCT hat keine native Sheet-Metal-API. Biegung muss als Split + Rotate + Sweep implementiert werden. Das ist aber deutlich robuster als der aktuelle Mesh-Ansatz, weil Boolean-Ops die Topologie korrekt handhaben.
-4. **Umfang**: Dies ist ein grosser Umbau. Empfehlung: Phase 1 zuerst implementieren und testen, dann schrittweise weiter.
-
-## Empfohlene Reihenfolge
-
-Phase 1 allein loest bereits das Cutout-Problem fuer die Base Face und beweist, dass der Ansatz funktioniert. Die Fold-Logik (Phase 2) ist der kritischste und aufwaendigste Teil, profitiert aber am meisten vom CAD-Kernel, weil die Boolean-Ops Cutouts an der Biegezone automatisch korrekt teilen.
+| `src/lib/faceRegistry.ts` | NEU |
+| `src/lib/metalHeroApi.ts` | NEU |
+| `src/lib/geometry.ts` | Reduziert: ~2865 -> ~400 Zeilen |
+| `src/lib/cadKernel.ts` | ENTFERNT oder Stub |
+| `src/lib/cadInit.ts` | ENTFERNT |
+| `src/lib/unfold.ts` | ENTFERNT (Typen verschoben) |
+| `src/components/workspace/Viewer3D.tsx` | Umgebaut: Async + Face-Registry |
+| `src/components/workspace/FaceSketchPlane.tsx` | Umgebaut: Face-Registry |
+| `src/components/workspace/UnfoldViewer.tsx` | Umgebaut: Async API |
+| `src/pages/Workspace.tsx` | Vereinfacht |
