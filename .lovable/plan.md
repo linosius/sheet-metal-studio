@@ -1,74 +1,49 @@
 
 
-## Problem
+## Backend-Update im Frontend abbilden
 
-Die 3D-Oberflächen erscheinen komplett schwarz, weil die Geometrie keine Normalen hat. Ohne Normalen kann das Licht nicht korrekt auf den Oberflächen berechnet werden -- daher wird alles dunkel dargestellt.
+Das Backend liefert jetzt echte FreeCAD-Faces und -Edges mit stabilen IDs. Das Frontend muss die Edge-Filterung im Edge-Modus an die neuen Namenskonventionen anpassen.
 
-## Ursache
+### Neue Edge-ID-Konventionen vom Backend
 
-In der Funktion `meshDataToBufferGeometry` (Datei `src/lib/metalHeroApi.ts`) werden Normalen nur gesetzt, wenn die API sie mitliefert. Falls die API keine Normalen zurückgibt, wird `computeVertexNormals()` nie aufgerufen -- die Geometrie bleibt ohne Lichtinformation.
+- **Base-Kanten**: `edge_top_*` / `edge_bot_*` (gepaart, Top/Bottom der Grundplatte)
+- **Fold-Seitenkanten**: `edge_side_{s|m|e}_fold_*`
+- **Fold-Tip-Kanten**: `edge_tip_{inner|outer}_fold_*`
 
-## Loesung
+### Anpassungen
 
-1. **Normalen-Berechnung als Fallback hinzufuegen** (`src/lib/metalHeroApi.ts`)
-   - Nach dem Setzen der Position und Indizes wird geprueft, ob Normalen vorhanden sind
-   - Falls nicht, wird automatisch `geo.computeVertexNormals()` aufgerufen
-   - Das stellt sicher, dass alle Meshes korrekt beleuchtet werden
+**1. Edge-Filterung in Viewer3D.tsx umstellen (Zeile ~357)**
 
-2. **Beleuchtung zurueck auf bewährte Werte setzen** (`src/components/workspace/Viewer3D.tsx`)
-   - `ambientLight` Intensitaet auf `0.9` erhoehen fuer gleichmaessige Grundhelligkeit
-   - `directionalLight` Intensitaet auf `0.8` reduzieren fuer sanftere Schatten
-   - Schatten optional deaktivieren (`castShadow`/`receiveShadow` entfernen), da sie bei flachen Blechen wenig Mehrwert bringen und Probleme verursachen koennen
+Statt `faceId.startsWith('base')` wird die Filterung auf `edge.id`-Muster umgestellt:
+- Base-Kanten (`edge_top_*`, `edge_bot_*`) werden im Edge-Modus ausgeblendet -- diese sind nicht für Flansch-Operationen relevant
+- `edge_tip_inner_*` und `edge_tip_outer_*` bleiben sichtbar und selektierbar (Flansch-Kandidaten)
+- `edge_side_*` Kanten werden je nach Bedarf ein-/ausgeblendet
 
-## Technische Details
+```text
+Alte Logik:
+  isBaseFaceEdge = !edge.faceId || edge.faceId.startsWith('base')
 
-### Aenderung 1: `src/lib/metalHeroApi.ts` (Zeile ~121-129)
-
-Fallback-Normalen hinzufuegen:
-
-```typescript
-export function meshDataToBufferGeometry(data: MeshData): THREE.BufferGeometry {
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(data.positions, 3));
-  if (data.indices && data.indices.length > 0) {
-    geo.setIndex(data.indices);
-  }
-  if (data.normals && data.normals.length > 0) {
-    geo.setAttribute('normal', new THREE.Float32BufferAttribute(data.normals, 3));
-  } else {
-    geo.computeVertexNormals();
-  }
-  geo.computeBoundingBox();
-  geo.computeBoundingSphere();
-  return geo;
-}
+Neue Logik:
+  isBaseFaceEdge = edge.id.startsWith('edge_top_') || edge.id.startsWith('edge_bot_')
 ```
 
-### Aenderung 2: `src/components/workspace/Viewer3D.tsx` – SceneSetup
+**2. Fold-Linien-Erkennung aufräumen (Zeile ~174)**
 
-Beleuchtung anpassen und Schatten entfernen:
+`nonSelectableEdgeIds` ist aktuell immer leer (`new Set<string>()`). Da das Backend jetzt stabile Fold-IDs liefert, können wir hier optional `edge_side_*`-Kanten als nicht-selektierbar markieren, falls diese nicht als Flansch-Ziele dienen sollen.
 
-```typescript
-function SceneSetup() {
-  return (
-    <>
-      <InventorBackground />
-      <ambientLight intensity={0.9} />
-      <directionalLight position={[80, 120, 100]} intensity={0.8} />
-      <directionalLight position={[-60, -40, 80]} intensity={0.35} />
-      <directionalLight position={[0, 60, -50]} intensity={0.2} />
-      <hemisphereLight args={['#dce4ed', '#8a9bb0', 0.3]} />
-    </>
-  );
-}
-```
+**3. Farbkodierung der Tip-Kanten anpassen (Zeile ~358)**
 
-- `castShadow` und `receiveShadow` von allen Mesh-Elementen entfernen
-- `<Canvas shadows>` zu `<Canvas>` aendern (ohne shadows)
+Die bestehende `isInnerTip`-Erkennung (`edge.id.includes('_tip_inner_')`) passt bereits zum neuen Schema. Outer-Tip-Kanten (`edge_tip_outer_*`) könnten eine eigene Farbe bekommen, um sie visuell von Inner-Tips zu unterscheiden.
 
-## Erwartetes Ergebnis
+### Technische Details
 
-- Alle Oberflaechen werden in hellem Grau dargestellt
-- Biegungen sind durch natuerliche Licht-/Schatten-Abstufungen an den Rundungen erkennbar
-- Keine schwarzen Flaechen mehr
+Datei: `src/components/workspace/Viewer3D.tsx`
+
+- Zeile ~357: `isBaseFaceEdge`-Check auf `edge.id`-basierte Erkennung umstellen
+- Zeile ~174: Optional `nonSelectableEdgeIds` mit `edge_side_*`-Kanten befüllen, die nicht als Flansch-Ziele gelten
+- Zeile ~356: `isInnerTip`-Check beibehalten, ggf. `isOuterTip` ergänzen
+
+Datei: `src/lib/faceRegistry.ts` -- keine Änderungen nötig, die Registry ist bereits korrekt aufgebaut.
+
+Datei: `src/lib/metalHeroApi.ts` -- keine Änderungen nötig, `updateFaceRegistry` wird bereits korrekt aufgerufen.
 
