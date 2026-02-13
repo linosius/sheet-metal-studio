@@ -225,16 +225,16 @@ function SheetMetalMesh({
         onClick={(e) => {
           console.log('[BaseFace] clicked, isSketchMode:', isSketchMode, 'onFaceClick:', !!onFaceClick, 'intersections:', e.intersections.length, e.intersections.map(i => i.object.userData));
           if (isSketchMode && onFaceClick) {
-            const closest = e.intersections[0];
-            if (closest && closest.object.userData?.faceId) return;
+            const hasNamedFace = e.intersections.some(i => i.object.userData?.faceId);
+            if (hasNamedFace) return;
             e.stopPropagation();
             onFaceClick(e.point.z > thickness * 0.5 ? 'base_top' : 'base_bot');
           }
         }}
         onPointerOver={(e) => {
           if (isSketchMode) {
-            const closest = e.intersections[0];
-            if (closest && closest.object.userData?.faceId) return;
+            const hasNamedFace = e.intersections.some(i => i.object.userData?.faceId);
+            if (hasNamedFace) return;
             document.body.style.cursor = 'pointer';
             setBaseFaceHovered(true);
           }
