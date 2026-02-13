@@ -1,25 +1,53 @@
 
 
-## Fix: Base-Top-Kanten im Edge-Modus sichtbar machen
+## Fix: Flange Face ID Mismatch between Frontend and Backend
 
 ### Problem
 
-Alle Edges aus der API haben IDs wie `edge_top_*` oder `edge_bot_*`. Die aktuelle Filterung blendet beide aus, sodass im Edge-Modus keine einzige Kante selektierbar ist.
+The frontend constructs flange face IDs as `flange_face_${flange.id}` (e.g., `flange_face_e_12345_abc`), but the backend registers them with a numeric suffix: `flange_face_e_12345_abc_0`, `flange_face_e_12345_abc_1`, etc.
 
-### Loesung
+This causes two failures:
+1. The `userData.faceId` on the rendered mesh does not match any entry in the face registry
+2. `getFaceTransform(faceId)` returns `null`, so the sketch plane cannot be positioned and the camera cannot orient to the face
 
-Nur `edge_bot_*`-Kanten ausblenden (diese sind die Unterseiten-Duplikate und nicht relevant fuer Flansch-Operationen). `edge_top_*`-Kanten bleiben sichtbar und selektierbar.
+### Solution
 
-### Technische Aenderung
+Update `Viewer3D.tsx` to look up actual face IDs from the face registry that belong to a given flange, instead of constructing a synthetic ID.
 
-Datei: `src/components/workspace/Viewer3D.tsx`, Zeile 364
+### Technical Changes
+
+**File: `src/components/workspace/Viewer3D.tsx`**
+
+At line 318-319, where flange meshes are rendered:
 
 ```text
-Vorher:
-  const isBaseFaceEdge = edge.id.startsWith('edge_top_') || edge.id.startsWith('edge_bot_');
+Before:
+  const flangeFaceId = `flange_face_${flange.id}`;
 
-Nachher:
-  const isBaseFaceEdge = edge.id.startsWith('edge_bot_');
+After:
+  // Find the actual face ID from the registry that matches this flange
+  const allFaces = getAllFaces();
+  const matchingFace = allFaces.find(f => f.faceId.startsWith(`flange_face_${flange.id}`));
+  const flangeFaceId = matchingFace ? matchingFace.faceId : `flange_face_${flange.id}`;
 ```
 
-Eine einzelne Zeile wird geaendert. `edge_top_*`-Kanten werden nicht mehr als "Base Face Edge" eingestuft und erscheinen wieder im Edge-Modus.
+This requires importing `getAllFaces` from `faceRegistry.ts` (already exported, line 14 already imports from faceRegistry but may need `getAllFaces` added).
+
+**File: `src/components/workspace/Viewer3D.tsx`, line 14**
+
+Add `getAllFaces` to the existing import:
+
+```text
+Before:
+  import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge } from '@/lib/faceRegistry';
+
+After:
+  import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge, getAllFaces } from '@/lib/faceRegistry';
+```
+
+### Why This Works
+
+- The face registry is populated by `updateFaceRegistry()` immediately after each `buildModel` call
+- `getAllFaces()` returns all registered faces including `flange_face_<id>_0`, `flange_face_<id>_1`, etc.
+- By matching with `startsWith`, the first matching face for a given flange is used as the click target
+- `getFaceTransform()` then returns valid transform data, enabling sketch plane positioning and camera orientation
