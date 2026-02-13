@@ -11,7 +11,7 @@ import {
   ProfileCutout,
 } from '@/lib/geometry';
 import { buildModel, BuildModelResult } from '@/lib/metalHeroApi';
-import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge } from '@/lib/faceRegistry';
+import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge, getAllFaces } from '@/lib/faceRegistry';
 import { FaceSketchPlane } from './FaceSketchPlane';
 
 // ========== Types ==========
@@ -316,7 +316,10 @@ function SheetMetalMesh({
 
       {/* Flange meshes from API */}
       {modelResult.flanges.map(flange => {
-        const flangeFaceId = `flange_face_${flange.id}`;
+        // Find the actual face ID from the registry (backend appends _0, _1, etc.)
+        const allFaces = getAllFaces();
+        const matchingFace = allFaces.find(f => f.faceId.startsWith(`flange_face_${flange.id}`));
+        const flangeFaceId = matchingFace ? matchingFace.faceId : `flange_face_${flange.id}`;
         const isHovered = hoveredFaceId === flangeFaceId;
         const isActive = activeSketchFaceId === flangeFaceId;
         return (
