@@ -119,6 +119,7 @@ export default function Workspace() {
         } else {
           // Use face registry for fold/flange face camera positioning
           const ft = getFaceTransform(faceId);
+          console.log('[Workspace] face transform for', faceId, ft);
           if (ft) {
             cameraApiRef.current.setViewToFace(ft.normal, ft.origin);
           }

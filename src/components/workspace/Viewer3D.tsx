@@ -317,9 +317,25 @@ function SheetMetalMesh({
       {/* Flange meshes from API */}
       {modelResult.flanges.map(flange => {
         // Find the actual face ID from the registry (backend appends _0, _1, etc.)
-        const allFaces = getAllFaces();
-        const matchingFace = allFaces.find(f => f.faceId.startsWith(`flange_face_${flange.id}`));
-        const flangeFaceId = matchingFace ? matchingFace.faceId : `flange_face_${flange.id}`;
+        // Pick the OUTER face (normal pointing away from base center) when multiple exist
+        const allFacesForFlange = getAllFaces();
+        const matchingFaces = allFacesForFlange.filter(f => f.faceId.startsWith(`flange_face_${flange.id}`));
+        let flangeFaceId: string;
+        if (matchingFaces.length > 1) {
+          const baseCx = (Math.min(...profile.map(p => p.x)) + Math.max(...profile.map(p => p.x))) / 2;
+          const baseCy = (Math.min(...profile.map(p => p.y)) + Math.max(...profile.map(p => p.y))) / 2;
+          const baseCz = thickness / 2;
+          const best = matchingFaces.reduce((a, b) => {
+            const distA = Math.hypot(a.origin[0] + a.normal[0] - baseCx, a.origin[1] + a.normal[1] - baseCy, a.origin[2] + a.normal[2] - baseCz);
+            const distB = Math.hypot(b.origin[0] + b.normal[0] - baseCx, b.origin[1] + b.normal[1] - baseCy, b.origin[2] + b.normal[2] - baseCz);
+            return distA >= distB ? a : b;
+          });
+          flangeFaceId = best.faceId;
+        } else if (matchingFaces.length === 1) {
+          flangeFaceId = matchingFaces[0].faceId;
+        } else {
+          flangeFaceId = `flange_face_${flange.id}`;
+        }
         const isHovered = hoveredFaceId === flangeFaceId;
         const isActive = activeSketchFaceId === flangeFaceId;
         return (
