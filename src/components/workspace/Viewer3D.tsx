@@ -322,14 +322,11 @@ function SheetMetalMesh({
         const matchingFaces = allFacesForFlange.filter(f => f.faceId.startsWith(`flange_face_${flange.id}`));
         let flangeFaceId: string;
         if (matchingFaces.length > 1) {
-          const baseCx = (Math.min(...profile.map(p => p.x)) + Math.max(...profile.map(p => p.x))) / 2;
-          const baseCy = (Math.min(...profile.map(p => p.y)) + Math.max(...profile.map(p => p.y))) / 2;
-          const baseCz = thickness / 2;
-          const best = matchingFaces.reduce((a, b) => {
-            const distA = Math.hypot(a.origin[0] + a.normal[0] - baseCx, a.origin[1] + a.normal[1] - baseCy, a.origin[2] + a.normal[2] - baseCz);
-            const distB = Math.hypot(b.origin[0] + b.normal[0] - baseCx, b.origin[1] + b.normal[1] - baseCy, b.origin[2] + b.normal[2] - baseCz);
-            return distA >= distB ? a : b;
-          });
+          // Pick the face with the largest area (width * height) — the main visible surface,
+          // not the thin thickness-edge face
+          const best = matchingFaces.reduce((a, b) =>
+            (a.width * a.height) >= (b.width * b.height) ? a : b
+          );
           flangeFaceId = best.faceId;
         } else if (matchingFaces.length === 1) {
           flangeFaceId = matchingFaces[0].faceId;
