@@ -16,7 +16,7 @@ import { ActionTree } from '@/components/workspace/ActionTree';
 import { useSketchStore } from '@/hooks/useSketchStore';
 import { useActionHistory } from '@/hooks/useActionHistory';
 import {
-  extractProfile, Flange, Fold, FaceSketch,
+  extractProfile, extractProfileAndCutouts, Flange, Fold, FaceSketch,
   FaceSketchLine, FaceSketchEntity, FaceSketchTool, classifySketchLineAsFold,
   getOppositeEdgeId, getUserFacingDirection, isEdgeOnFoldLine, isBaseFaceFold,
   ProfileCutout, circleToPolygon, rectToPolygon,
@@ -53,80 +53,12 @@ export default function Workspace() {
   const canConvert = useMemo(() => extractProfile(sketch.entities) !== null, [sketch.entities]);
 
   const handleConvertToBaseFace = useCallback(() => {
-    const p = extractProfile(sketch.entities);
-    if (!p) {
+    const result = extractProfileAndCutouts(sketch.entities);
+    if (!result) {
       toast.error('Cannot create base face', { description: 'Draw a closed shape first.' });
       return;
     }
-    const extractedCutouts: ProfileCutout[] = [];
-
-    for (const e of sketch.entities) {
-      if (e.type === 'circle') {
-        extractedCutouts.push({ type: 'circle', center: e.center, radius: e.radius, polygon: circleToPolygon(e.center, e.radius) });
-      }
-    }
-
-    const rects = sketch.entities.filter(e => e.type === 'rect');
-    for (const e of rects) {
-      if (e.type !== 'rect') continue;
-      const isProfile = p.length === 4 &&
-        Math.abs(p[0].x - e.origin.x) < 0.5 && Math.abs(p[0].y - e.origin.y) < 0.5 &&
-        Math.abs(p[2].x - (e.origin.x + e.width)) < 0.5 && Math.abs(p[2].y - (e.origin.y + e.height)) < 0.5;
-      if (isProfile) continue;
-      extractedCutouts.push({ type: 'rect', origin: e.origin, width: e.width, height: e.height, polygon: rectToPolygon(e.origin, e.width, e.height) });
-    }
-
-    // Closed line loops
-    const profileLines = sketch.entities.filter(e => e.type === 'line');
-    const tolerance = 1.0;
-    const foundLoops: Point2D[][] = [];
-    const globalUsed = new Set<string>();
-    const remainingLines = profileLines.filter(e => e.type === 'line');
-
-    for (const startLine of remainingLines) {
-      if (globalUsed.has(startLine.id) || startLine.type !== 'line') continue;
-      const loopPts: Point2D[] = [startLine.start, startLine.end];
-      const loopUsed = new Set([startLine.id]);
-      let closed = false;
-      let maxIter = remainingLines.length * 2;
-
-      while (!closed && maxIter > 0) {
-        maxIter--;
-        const last = loopPts[loopPts.length - 1];
-        let found = false;
-        for (const line of remainingLines) {
-          if (loopUsed.has(line.id) || globalUsed.has(line.id) || line.type !== 'line') continue;
-          const dS = Math.hypot(line.start.x - last.x, line.start.y - last.y);
-          const dE = Math.hypot(line.end.x - last.x, line.end.y - last.y);
-          if (dS < tolerance) {
-            const dClose = Math.hypot(line.end.x - loopPts[0].x, line.end.y - loopPts[0].y);
-            if (dClose < tolerance && loopUsed.size >= 2) closed = true;
-            else loopPts.push(line.end);
-            loopUsed.add(line.id); found = true; break;
-          } else if (dE < tolerance) {
-            const dClose = Math.hypot(line.start.x - loopPts[0].x, line.start.y - loopPts[0].y);
-            if (dClose < tolerance && loopUsed.size >= 2) closed = true;
-            else loopPts.push(line.start);
-            loopUsed.add(line.id); found = true; break;
-          }
-        }
-        if (!found) break;
-      }
-
-      if (closed && loopPts.length >= 3) {
-        const isProfileLoop = loopPts.length === p.length && loopPts.every((lp, idx) =>
-          Math.hypot(lp.x - p[idx].x, lp.y - p[idx].y) < tolerance
-        );
-        if (!isProfileLoop) {
-          foundLoops.push(loopPts);
-          loopUsed.forEach(id => globalUsed.add(id));
-        }
-      }
-    }
-
-    for (const loop of foundLoops) {
-      extractedCutouts.push({ type: 'polygon', polygon: loop });
-    }
+    const { profile: p, cutouts: extractedCutouts } = result;
 
     setProfile(p);
     setCutouts(extractedCutouts);
