@@ -1,82 +1,76 @@
 
 
-## Redesign: Detect Largest Closed Loop as Base Face, Others as Cutouts
+## Fix: Wrong Face Selected for Flange Sketch Plane
 
 ### Problem
 
-The current system uses fragile, hard-coded logic:
-- `extractProfile()` picks the first rectangle or the first chain of connected lines as the profile
-- `handleConvertToBaseFace()` then separately detects additional closed loops and tries to filter out the profile with a strict order-sensitive comparison
+When clicking a flange face, the correct faceId is detected (confirmed by console logs), but the sketch plane and camera orient to what looks like the base face. This happens because:
 
-This breaks when:
-- The base face is drawn with lines (not a rect) and the loop traversal starts at a different vertex
-- There are multiple closed loops and the outer one isn't detected first
-- Mixed geometry types (arcs, circles, polylines) form part of the boundary
+1. The backend registers **multiple faces per flange** with numeric suffixes (e.g., `flange_face_X_0`, `flange_face_X_1`) for inner and outer surfaces
+2. The current code uses `.find()` which returns the **first** match -- this may be the **inner** face whose normal points inward (toward the base)
+3. The camera aligns to this inward-facing normal, making it look like the base face was selected
 
 ### Solution
 
-Replace the current approach with a unified loop detection algorithm:
-
-1. Find **all** closed loops from all geometry entities (lines, rects, circles, arcs)
-2. Compute the **area** of each closed loop
-3. The loop with the **largest area** becomes the base face profile
-4. All other closed loops become cutouts
+When resolving the flange faceId from the registry, select the face whose normal points **away from the base face center** (the outer/visible face), not just the first match.
 
 ### Technical Changes
 
-**File: `src/lib/geometry.ts`**
+**File: `src/components/workspace/Viewer3D.tsx`** (lines 319-322)
 
-1. Add a new function `findAllClosedLoops(entities): Point2D[][]` that:
-   - Converts all entity types (line, rect, circle, arc) into a unified edge list (start/end point pairs)
-   - Uses a graph traversal to find all closed loops
-   - Returns an array of polygons (point arrays)
+Replace the simple `.find()` with logic that picks the outward-facing face:
 
-2. Add a helper `polygonArea(pts: Point2D[]): number` using the shoelace formula to compute signed area
+```typescript
+// Find ALL matching faces for this flange
+const allFaces = getAllFaces();
+const matchingFaces = allFaces.filter(f => f.faceId.startsWith(`flange_face_${flange.id}`));
 
-3. Add a new function `extractProfileAndCutouts(entities): { profile: Point2D[], cutouts: ProfileCutout[] } | null` that:
-   - Calls `findAllClosedLoops`
-   - Also includes standalone circles and rects as loops
-   - Picks the largest-area loop as the profile
-   - Returns remaining loops as polygon cutouts, and standalone circles as circle cutouts
+let flangeFaceId: string;
+if (matchingFaces.length > 1) {
+  // Pick the face whose normal points AWAY from the base face center
+  const baseCx = (Math.min(...profile.map(p => p.x)) + Math.max(...profile.map(p => p.x))) / 2;
+  const baseCy = (Math.min(...profile.map(p => p.y)) + Math.max(...profile.map(p => p.y))) / 2;
+  const baseCz = thickness / 2;
 
-**File: `src/pages/Workspace.tsx`**
-
-4. Replace the body of `handleConvertToBaseFace`:
-   - Remove the separate `extractProfile()` call and manual loop detection (lines 55-129)
-   - Call the new `extractProfileAndCutouts(sketch.entities)` instead
-   - Use its returned `profile` and `cutouts` directly
-
-5. Update `canConvert` to use the new function (or keep `extractProfile` as a lightweight check)
-
-### Algorithm Detail: `findAllClosedLoops`
-
-```text
-1. Build an adjacency graph from all line segments (including rect edges and arc approximations)
-2. For each unvisited edge, attempt to trace a closed loop:
-   - Follow connected edges until returning to the start point
-   - Mark used edges to avoid duplicates
-3. Standalone circles are added directly as circular loops
-4. Return all found loops
+  // Choose face where (origin + normal) moves further from base center
+  const best = matchingFaces.reduce((a, b) => {
+    const distA = Math.hypot(
+      a.origin[0] + a.normal[0] - baseCx,
+      a.origin[1] + a.normal[1] - baseCy,
+      a.origin[2] + a.normal[2] - baseCz
+    );
+    const distB = Math.hypot(
+      b.origin[0] + b.normal[0] - baseCx,
+      b.origin[1] + b.normal[1] - baseCy,
+      b.origin[2] + b.normal[2] - baseCz
+    );
+    return distA >= distB ? a : b;
+  });
+  flangeFaceId = best.faceId;
+} else if (matchingFaces.length === 1) {
+  flangeFaceId = matchingFaces[0].faceId;
+} else {
+  flangeFaceId = `flange_face_${flange.id}`;
+}
 ```
 
-### Algorithm Detail: Largest Loop Selection
+This ensures the **outer** (user-visible) face is always selected for both the 3D mesh interaction and the sketch plane.
 
-```text
-1. Compute area of each loop using shoelace formula: |sum((x_i * y_{i+1}) - (x_{i+1} * y_i)) / 2|
-2. Sort loops by area descending
-3. First loop = base face profile
-4. Remaining loops = cutouts
+### Why This Works
+
+- When the user clicks a flange, they see the outer surface
+- The outer face's normal points away from the part center
+- By comparing which face's normal direction moves further from the base center, we consistently pick the correct (outer) face
+- The sketch plane and camera will then align to this outward-facing surface
+
+### Additional Logging
+
+Add a debug log in `handleFaceClick` (Workspace.tsx) to confirm the transform data:
+
+```typescript
+const ft = getFaceTransform(faceId);
+console.log('[Workspace] face transform for', faceId, ft);
 ```
 
-### Existing `extractProfile` Function
-
-Keep the existing `extractProfile()` function for backward compatibility (used in `canConvert` check), but the main conversion logic will use the new unified function.
-
-### Edge Cases Handled
-
-- Base face drawn with lines in any order/direction -- loop detection is direction-agnostic
-- Multiple internal cutouts of different types (circles, rects, polygons)
-- Circle entities used as the outer profile (unlikely but handled)
-- Rectangles used as cutouts inside a line-drawn profile
-- Mixed geometry where arcs form part of the boundary (approximated as line segments)
+This helps verify the fix is working correctly.
 
