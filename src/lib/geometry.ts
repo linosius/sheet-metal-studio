@@ -282,6 +282,183 @@ export function getFoldNormal(fold: Fold, faceWidth: number, faceHeight: number)
   return { x: nx, y: ny };
 }
 
+// ========== Unified Loop Detection ==========
+
+interface Edge {
+  id: string;
+  start: Point2D;
+  end: Point2D;
+}
+
+function pointKey(p: Point2D, tol = 1.0): string {
+  const rx = Math.round(p.x / tol) * tol;
+  const ry = Math.round(p.y / tol) * tol;
+  return `${rx},${ry}`;
+}
+
+/**
+ * Convert all sketch entities into a unified edge list.
+ */
+function entitiesToEdges(entities: SketchEntity[]): Edge[] {
+  const edges: Edge[] = [];
+  let eid = 0;
+  for (const e of entities) {
+    if (e.type === 'line') {
+      edges.push({ id: `e${eid++}`, start: e.start, end: e.end });
+    } else if (e.type === 'rect') {
+      const corners = rectToPolygon(e.origin, e.width, e.height);
+      for (let i = 0; i < corners.length; i++) {
+        edges.push({ id: `e${eid++}`, start: corners[i], end: corners[(i + 1) % corners.length] });
+      }
+    } else if (e.type === 'arc') {
+      // Approximate arc as line segments
+      const segments = 16;
+      for (let i = 0; i < segments; i++) {
+        const a1 = e.startAngle + (e.endAngle - e.startAngle) * (i / segments);
+        const a2 = e.startAngle + (e.endAngle - e.startAngle) * ((i + 1) / segments);
+        edges.push({
+          id: `e${eid++}`,
+          start: { x: e.center.x + Math.cos(a1) * e.radius, y: e.center.y + Math.sin(a1) * e.radius },
+          end: { x: e.center.x + Math.cos(a2) * e.radius, y: e.center.y + Math.sin(a2) * e.radius },
+        });
+      }
+    }
+    // circles are handled separately as standalone loops
+  }
+  return edges;
+}
+
+/**
+ * Find all closed loops from sketch entities using graph traversal.
+ */
+export function findAllClosedLoops(entities: SketchEntity[]): Point2D[][] {
+  const edges = entitiesToEdges(entities);
+  const tol = 1.0;
+  const loops: Point2D[][] = [];
+
+  // Build adjacency: pointKey -> list of edge indices
+  const adj = new Map<string, number[]>();
+  for (let i = 0; i < edges.length; i++) {
+    const ks = pointKey(edges[i].start, tol);
+    const ke = pointKey(edges[i].end, tol);
+    if (!adj.has(ks)) adj.set(ks, []);
+    if (!adj.has(ke)) adj.set(ke, []);
+    adj.get(ks)!.push(i);
+    adj.get(ke)!.push(i);
+  }
+
+  const usedEdges = new Set<number>();
+
+  for (let startIdx = 0; startIdx < edges.length; startIdx++) {
+    if (usedEdges.has(startIdx)) continue;
+
+    const path: Point2D[] = [edges[startIdx].start, edges[startIdx].end];
+    const pathEdges: number[] = [startIdx];
+    const localUsed = new Set<number>([startIdx]);
+    let closed = false;
+    let maxIter = edges.length * 2;
+
+    while (!closed && maxIter-- > 0) {
+      const last = path[path.length - 1];
+      const lastKey = pointKey(last, tol);
+      const candidates = adj.get(lastKey) ?? [];
+      let found = false;
+
+      for (const ci of candidates) {
+        if (localUsed.has(ci)) continue;
+        const edge = edges[ci];
+        const ks = pointKey(edge.start, tol);
+        const ke = pointKey(edge.end, tol);
+        let nextPt: Point2D;
+
+        if (ks === lastKey) {
+          nextPt = edge.end;
+        } else if (ke === lastKey) {
+          nextPt = edge.start;
+        } else {
+          continue;
+        }
+
+        // Check if we close back to start
+        if (pointKey(nextPt, tol) === pointKey(path[0], tol) && pathEdges.length >= 2) {
+          closed = true;
+          localUsed.add(ci);
+          pathEdges.push(ci);
+          found = true;
+          break;
+        }
+
+        path.push(nextPt);
+        localUsed.add(ci);
+        pathEdges.push(ci);
+        found = true;
+        break;
+      }
+
+      if (!found) break;
+    }
+
+    if (closed && path.length >= 3) {
+      loops.push(path);
+      pathEdges.forEach(ei => usedEdges.add(ei));
+    }
+  }
+
+  // Add standalone circles as polygon loops
+  for (const e of entities) {
+    if (e.type === 'circle') {
+      loops.push(circleToPolygon(e.center, e.radius));
+    }
+  }
+
+  return loops;
+}
+
+/**
+ * Extract the base face profile (largest loop) and cutouts (all other loops).
+ */
+export function extractProfileAndCutouts(entities: SketchEntity[]): {
+  profile: Point2D[];
+  cutouts: ProfileCutout[];
+} | null {
+  const loops = findAllClosedLoops(entities);
+  if (loops.length === 0) return null;
+
+  // Sort by area descending
+  loops.sort((a, b) => polygonArea(b) - polygonArea(a));
+
+  const profile = loops[0];
+  const cutouts: ProfileCutout[] = [];
+
+  // Check if remaining loops correspond to standalone circle entities
+  const circles = entities.filter(e => e.type === 'circle');
+
+  for (let i = 1; i < loops.length; i++) {
+    const loop = loops[i];
+    // Check if this loop is a circle entity
+    const matchingCircle = circles.find(c => {
+      if (c.type !== 'circle') return false;
+      const cPoly = circleToPolygon(c.center, c.radius);
+      if (cPoly.length !== loop.length) return false;
+      // Compare first point
+      return Math.hypot(cPoly[0].x - loop[0].x, cPoly[0].y - loop[0].y) < 1.0;
+    });
+
+    if (matchingCircle && matchingCircle.type === 'circle') {
+      cutouts.push({
+        type: 'circle',
+        center: matchingCircle.center,
+        radius: matchingCircle.radius,
+        polygon: loop,
+      });
+    } else {
+      cutouts.push({ type: 'polygon', polygon: loop });
+    }
+  }
+
+  return { profile, cutouts };
+}
+
 // ========== Polygon Utilities (2D) ==========
 
 export function polygonArea(poly: Point2D[]): number {
