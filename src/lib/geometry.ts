@@ -44,6 +44,14 @@ export function extractProfile(entities: SketchEntity[]): Point2D[] | null {
     }
   }
 
+  const circles = entities.filter(e => e.type === 'circle');
+  if (circles.length > 0) {
+    const circle = circles[0];
+    if (circle.type === 'circle') {
+      return circleToPolygon(circle.center, circle.radius);
+    }
+  }
+
   const lines = entities.filter(e => e.type === 'line');
   if (lines.length < 3) return null;
 
