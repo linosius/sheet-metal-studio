@@ -1,53 +1,42 @@
 
 
-## Fix: Flange Face ID Mismatch between Frontend and Backend
+## Fix: Base Face Intercepting Flange Clicks
 
 ### Problem
 
-The frontend constructs flange face IDs as `flange_face_${flange.id}` (e.g., `flange_face_e_12345_abc`), but the backend registers them with a numeric suffix: `flange_face_e_12345_abc_0`, `flange_face_e_12345_abc_1`, etc.
-
-This causes two failures:
-1. The `userData.faceId` on the rendered mesh does not match any entry in the face registry
-2. `getFaceTransform(faceId)` returns `null`, so the sketch plane cannot be positioned and the camera cannot orient to the face
+When clicking on a flange face, the raycast hits both the base face and the flange. Because the base face mesh is a solid 3D shape, its surface is often geometrically closer to the camera than the flange face. The current guard only checks `e.intersections[0]` for a `faceId`, but that first intersection is the base face itself (which uses `faceType: "base"`, not `faceId`). So the guard never triggers and the click is handled as a base face click.
 
 ### Solution
 
-Update `Viewer3D.tsx` to look up actual face IDs from the face registry that belong to a given flange, instead of constructing a synthetic ID.
+Change the base face click handler (and hover handlers) to check if **any** intersection in the list has a `faceId`. If so, skip the base face event -- the user intended to click a specific named face (flange, fold, etc.).
 
-### Technical Changes
+### Technical Change
 
 **File: `src/components/workspace/Viewer3D.tsx`**
 
-At line 318-319, where flange meshes are rendered:
+**onClick handler (lines 225-233):**
 
 ```text
 Before:
-  const flangeFaceId = `flange_face_${flange.id}`;
+  const closest = e.intersections[0];
+  if (closest && closest.object.userData?.faceId) return;
 
 After:
-  // Find the actual face ID from the registry that matches this flange
-  const allFaces = getAllFaces();
-  const matchingFace = allFaces.find(f => f.faceId.startsWith(`flange_face_${flange.id}`));
-  const flangeFaceId = matchingFace ? matchingFace.faceId : `flange_face_${flange.id}`;
+  // If any intersection has a named faceId, skip base face — user intended that face
+  const hasNamedFace = e.intersections.some(i => i.object.userData?.faceId);
+  if (hasNamedFace) return;
 ```
 
-This requires importing `getAllFaces` from `faceRegistry.ts` (already exported, line 14 already imports from faceRegistry but may need `getAllFaces` added).
-
-**File: `src/components/workspace/Viewer3D.tsx`, line 14**
-
-Add `getAllFaces` to the existing import:
+**onPointerOver handler (lines 234-240):** Same pattern change:
 
 ```text
 Before:
-  import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge } from '@/lib/faceRegistry';
+  const closest = e.intersections[0];
+  if (closest && closest.object.userData?.faceId) return;
 
 After:
-  import { getFaceTransform, faceTransformToMatrix4, apiEdgeToPartEdge, getAllFaces } from '@/lib/faceRegistry';
+  const hasNamedFace = e.intersections.some(i => i.object.userData?.faceId);
+  if (hasNamedFace) return;
 ```
 
-### Why This Works
-
-- The face registry is populated by `updateFaceRegistry()` immediately after each `buildModel` call
-- `getAllFaces()` returns all registered faces including `flange_face_<id>_0`, `flange_face_<id>_1`, etc.
-- By matching with `startsWith`, the first matching face for a given flange is used as the click target
-- `getFaceTransform()` then returns valid transform data, enabling sketch plane positioning and camera orientation
+This ensures that whenever the ray passes through both the base face and a flange/fold face, the base face yields to the named face regardless of intersection order.
