@@ -361,7 +361,7 @@ function SheetMetalMesh({
         const edgeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), edgeDir);
         const isInnerTip = edge.id.includes('_tip_inner_');
         const isOuterTip = edge.id.includes('_tip_outer_');
-        const isBaseFaceEdge = edge.id.startsWith('edge_top_') || edge.id.startsWith('edge_bot_');
+        const isBaseFaceEdge = edge.id.startsWith('edge_bot_');
         const edgeColor = isFoldLine ? '#ef4444' : hasFlangeOnIt ? '#22c55e' : isSelected ? '#a855f7' : isInnerTip ? '#f59e0b' : isOuterTip ? '#06b6d4' : '#3b82f6';
         const showEdgeLine = isEdgeMode && !isFoldLine && !isBaseFaceEdge;
 
