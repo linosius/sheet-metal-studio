@@ -8,6 +8,7 @@ import * as THREE from 'three';
 import { Point2D } from './sheetmetal';
 import { Flange, Fold, ProfileCutout, FaceSketch } from './geometry';
 import { FaceTransform, ApiEdge, updateFaceRegistry } from './faceRegistry';
+import { addApiLog } from './apiLogger';
 
 const API_BASE = 'https://api.metal-hero.com';
 
@@ -228,7 +229,9 @@ export async function buildModel(
 ): Promise<BuildModelResult> {
   const payload = buildRequestPayload(profile, thickness, cutouts, folds, flanges, faceSketches, kFactor);
 
-  const response = await fetch(`${API_BASE}/api/v1/build-model`, {
+  const url = `${API_BASE}/api/v1/build-model`;
+  const t0 = performance.now();
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -239,6 +242,18 @@ export async function buildModel(
   }
 
   const data: BuildModelResponse = await response.json();
+  const durationMs = Math.round(performance.now() - t0);
+
+  addApiLog({
+    timestamp: new Date().toISOString(),
+    endpoint: url,
+    method: 'POST',
+    requestBody: payload,
+    responseStatus: response.status,
+    responseBody: data,
+    durationMs,
+  });
+
   if (!data.success || !data.model) {
     throw new Error(data.error ?? 'Build model failed');
   }
@@ -296,7 +311,9 @@ export async function unfoldModel(
 ): Promise<FlatPatternResult> {
   const payload = buildRequestPayload(profile, thickness, cutouts, folds, flanges, faceSketches, kFactor);
 
-  const response = await fetch(`${API_BASE}/api/v1/unfold`, {
+  const url = `${API_BASE}/api/v1/unfold`;
+  const t0 = performance.now();
+  const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -307,6 +324,18 @@ export async function unfoldModel(
   }
 
   const data: UnfoldResponse = await response.json();
+  const durationMs = Math.round(performance.now() - t0);
+
+  addApiLog({
+    timestamp: new Date().toISOString(),
+    endpoint: url,
+    method: 'POST',
+    requestBody: payload,
+    responseStatus: response.status,
+    responseBody: data,
+    durationMs,
+  });
+
   if (!data.success || !data.flatPattern) {
     throw new Error(data.error ?? 'Unfold failed');
   }
